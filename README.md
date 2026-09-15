@@ -20,21 +20,22 @@ MCP 使用 **stdio**，由客户端启动 `server.py` 并管理进程，不监�
 首次安装（本次已完成）：
 
 ```powershell
-uv venv recipe-mcp/.venv
-uv pip install --python recipe-mcp/.venv/Scripts/python.exe -r recipe-mcp/requirements.txt
+uv sync --directory recipe-mcp
 ```
+
+依赖锁定在 `pyproject.toml` / `uv.lock`；`uv sync` 会按锁文件重建 `.venv`。以下命令均可用 `uv run --directory recipe-mcp <script>` 形式运行（等价于 `recipe-mcp/.venv/Scripts/python.exe recipe-mcp/<script>`）。
 
 导出当前模组的最终配方、机器、科技原型：
 
 ```powershell
-recipe-mcp/.venv/Scripts/python.exe recipe-mcp/export.py
+uv run --directory recipe-mcp export.py
 ```
 
 从最新自动/手动存档导出科技进度，或明确选择一个存档：
 
 ```powershell
-recipe-mcp/.venv/Scripts/python.exe recipe-mcp/export_save.py
-recipe-mcp/.venv/Scripts/python.exe recipe-mcp/export_save.py --save 'C:/Users/a6320/AppData/Roaming/Factorio/saves/Nullius-Next.zip'
+uv run --directory recipe-mcp export_save.py
+uv run --directory recipe-mcp export_save.py --save 'C:/Users/a6320/AppData/Roaming/Factorio/saves/Nullius-Next.zip'
 ```
 
 默认选择saves目录修改时间最新的zip，并在结果中记录实际选中的路径、存档副本SHA256和导出时间。它复制存档到独立目录，复制当前启用模组与设置，**仅在独立模组目录加入 `factorio-recipe-progress-helper`**，运行一次1 tick的benchmark导出；不会改写原存档，不会在正在游玩的mods目录安装helper，也不向正在运行的游戏发送命令。
@@ -85,11 +86,11 @@ recipe-mcp/.venv/Scripts/python.exe recipe-mcp/export_save.py --save 'C:/Users/a
 client.py会启动stdio服务、完成调用并关闭子进程：
 
 ```powershell
-recipe-mcp/.venv/Scripts/python.exe recipe-mcp/client.py get_progress_context
-recipe-mcp/.venv/Scripts/python.exe recipe-mcp/client.py list_technologies '{"force":"faction-a632079","state":"researched","limit":20}'
-recipe-mcp/.venv/Scripts/python.exe recipe-mcp/client.py get_technology '{"name":"nullius-high-pressure-chemistry","force":"faction-a632079"}'
-recipe-mcp/.venv/Scripts/python.exe recipe-mcp/client.py related_recipes '{"material":"nullius-methanol","direction":"producers","available_only":true,"force":"faction-a632079"}'
-recipe-mcp/.venv/Scripts/python.exe recipe-mcp/client.py validate_plan '{"recipe_rates":{"nullius-fermentation":1},"force":"faction-a632079"}'
+uv run --directory recipe-mcp client.py get_progress_context
+uv run --directory recipe-mcp client.py list_technologies '{"force":"faction-a632079","state":"researched","limit":20}'
+uv run --directory recipe-mcp client.py get_technology '{"name":"nullius-high-pressure-chemistry","force":"faction-a632079"}'
+uv run --directory recipe-mcp client.py related_recipes '{"material":"nullius-methanol","direction":"producers","available_only":true,"force":"faction-a632079"}'
+uv run --directory recipe-mcp client.py validate_plan '{"recipe_rates":{"nullius-fermentation":1},"force":"faction-a632079"}'
 ```
 
 也可由客户端调用start.ps1启动前台stdio服务；它不会自行创建后台窗口，stdout专用于协议。
@@ -106,9 +107,9 @@ recipe-mcp/.venv/Scripts/python.exe recipe-mcp/client.py validate_plan '{"recipe
 甲醇计算现在默认按进度快照筛选配方、机器和插件；未知/锁定候选被排除。传入队伍后，输出到 `data/methanol-current-stage.json`，并包含每项阶段验证与原存档来源：
 
 ```powershell
-recipe-mcp/.venv/Scripts/python.exe recipe-mcp/analyze_methanol.py --force faction-a632079
-recipe-mcp/.venv/Scripts/python.exe recipe-mcp/analyze_methanol.py --theoretical
-recipe-mcp/.venv/Scripts/python.exe recipe-mcp/check.py
+uv run --directory recipe-mcp analyze_methanol.py --force faction-a632079
+uv run --directory recipe-mcp analyze_methanol.py --theoretical
+uv run --directory recipe-mcp check.py
 ```
 
 --theoretical显式忽略当前研究，重算上一版假设科技阶段的14组对比，写入独立的methanol-analysis.json。当前阶段计算保留已导出的配方额外产能加成；科技过滤通过并不代表完整工厂可建，还需满足机器流体接口、原料供应、表面条件等。本甲醇计算仍限于已声明的空气/水合成链与设备/插件等级，不是所有生物链、插件塔或整数布局的全局最优。

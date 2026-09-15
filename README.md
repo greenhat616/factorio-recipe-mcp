@@ -1,0 +1,116 @@
+# Factorio 配方、科技与存档进度 MCP
+
+MCP 使用 **stdio**，由客户端启动 `server.py` 并管理进程，不监听HTTP端口。旧HTTP服务已停止。安装好的配置见 `mcp-config.json`：
+
+```json
+{
+  "mcpServers": {
+    "factorio-recipes": {
+      "command": "G:/Programs/factorio/hotfix/recipe-mcp/.venv/Scripts/python.exe",
+      "args": ["G:/Programs/factorio/hotfix/recipe-mcp/server.py"]
+    }
+  }
+}
+```
+
+需要固定默认队伍时，在args末尾加入 `"--force", "faction-a632079"`。未指定默认队伍且存档有多个非系统队伍时，需要在工具调用中明确传入force。没有存档进度时仍可查全部原型和科技树，但状态标为unknown；不能推测当前已解锁。
+
+## 数据更新
+
+首次安装（本次已完成）：
+
+```powershell
+uv venv recipe-mcp/.venv
+uv pip install --python recipe-mcp/.venv/Scripts/python.exe -r recipe-mcp/requirements.txt
+```
+
+导出当前模组的最终配方、机器、科技原型：
+
+```powershell
+recipe-mcp/.venv/Scripts/python.exe recipe-mcp/export.py
+```
+
+从最新自动/手动存档导出科技进度，或明确选择一个存档：
+
+```powershell
+recipe-mcp/.venv/Scripts/python.exe recipe-mcp/export_save.py
+recipe-mcp/.venv/Scripts/python.exe recipe-mcp/export_save.py --save 'C:/Users/a6320/AppData/Roaming/Factorio/saves/Nullius-Next.zip'
+```
+
+默认选择saves目录修改时间最新的zip，并在结果中记录实际选中的路径、存档副本SHA256和导出时间。它复制存档到独立目录，复制当前启用模组与设置，**仅在独立模组目录加入 `factorio-recipe-progress-helper`**，运行一次1 tick的benchmark导出；不会改写原存档，不会在正在游玩的mods目录安装helper，也不向正在运行的游戏发送命令。
+
+加载副本时增加helper会触发模组配置变更回调，随后模拟1 tick。因此快照表示该存档在当前模组环境加载后的状态，可能包含其他模组的配置变更处理。来源、tick和此加载方式都记录在provenance中。benchmark输入副本本身也会做导出前后哈希核对。
+
+导出器同时比较全部原配方的时间、类别、投入/产出及全部模组数据阶段校验值，忽略helper自身的零数据校验值。数量归一化到小数后6位，兼容游戏对极小物流占位数量的定点化。两者均匹配且原始原型文件SHA256一致时，MCP才允许用进度过滤和验证；不匹配时返回unknown并拒绝阶段计算。不要把旧存档进度与更新后的模组数据混用。
+
+重新导出后重启MCP客户端中的服务进程，或重新运行一次性client.py，即可读取新快照。
+
+## 科技锁模型
+
+参考本机Recipe Book 4.0.8的 `scripts/database/researched.lua`：分别检查force的已研究科技与实际启用配方。也参考Factoriopedia展示配方解锁科技的做法。
+
+- **原型解锁关系**：科技effects中的unlock-recipe、科技前置、科学包或research_trigger。多个解锁科技是替代关系，不能要求全部研究。
+- **实际科技状态**：按队伍读取researched、enabled、level、saved_progress；保留当前研究、当前进度和队列。科技enabled表示允许研究，不等于已研究。
+- **实际配方状态**：以队伍的LuaRecipe.enabled为准，支持模组脚本单独开关配方。科技已研究但配方关闭时标为script_disabled；科技未研究但脚本开启配方时仍可用。
+- **隐藏与锁定分开**：hidden影响显示，不意味着不可在机器中使用。列表可以包含隐藏科技。
+- **未知与锁定分开**：没有兼容快照、缺失配方、尚未选择队伍时返回unknown，不把数据缺失当成locked。
+- **无限科技/触发科技**：返回实际level和saved_progress；保留research_trigger和Nullius检查点要求，不只按科学包颜色判断。
+
+配方availability.state为unlocked、locked、script_disabled、virtual、unknown；usable_at_stage为true/false/null，表示研究权限。科技state为researched、researching、available_to_research、locked、disabled、unknown。available_to_research只确认前置与enabled条件，不代表当前库存足够或触发事件已完成。
+
+物流请求和创造模式的伪生产配方默认排除，阶段验证不允许它们。普通隐藏配方仍可查询并根据实际enabled判断。
+
+## MCP工具
+
+| 工具 | 用途 |
+|---|---|
+| get_progress_context | 存档来源、tick、兼容性、队伍列表、研究数量、当前研究和队列 |
+| list_technologies | 科技分页、名称过滤、状态过滤、显示隐藏科技 |
+| get_technology | 科技效果、直接前置、成本/触发条件、存档等级和进度 |
+| technology_requirements | 递归前置、科学包、Nullius检查点代币、目标科技实际状态 |
+| search_recipes | 配方搜索，available_only可筛当前队伍可用配方 |
+| get_recipe | 配方数量、时间、产能许可、解锁科技和实际可用状态 |
+| related_recipes | 材料的生产/消费配方，可筛当前可用 |
+| production_chain | 默认只展开当前队伍已启用的上游配方，带深度/数量限制和循环保护 |
+| compatible_machines | 类别兼容的机器、速度、耗电、槽位、流体接口和制造解锁状态 |
+| validate_plan | 批量验证配方，以及可选machines/modules的制造权限 |
+| net_balance | 默认拒绝锁定配方；显式validate_stage=false允许理论配比 |
+
+搜索目前使用游戏内部英文ID，返回原始本地化键。状态过滤和默认阶段计算需要明确队伍。`net_balance`只算基础期望配比，不应用插件或队伍额外产能，也不证明不同温度流体可互换；实际配方产能加成会随get_recipe返回。
+
+机器/插件检查通过对应物品的制造配方做科技验证，排除装拆箱和循环自返配方；映射不足时返回unknown，不假定可用。已经拥有的机器和库存没有扫描，因此尚不能制造但库存中已有的设备需要另行指定使用边界。
+
+## 调用示例
+
+client.py会启动stdio服务、完成调用并关闭子进程：
+
+```powershell
+recipe-mcp/.venv/Scripts/python.exe recipe-mcp/client.py get_progress_context
+recipe-mcp/.venv/Scripts/python.exe recipe-mcp/client.py list_technologies '{"force":"faction-a632079","state":"researched","limit":20}'
+recipe-mcp/.venv/Scripts/python.exe recipe-mcp/client.py get_technology '{"name":"nullius-high-pressure-chemistry","force":"faction-a632079"}'
+recipe-mcp/.venv/Scripts/python.exe recipe-mcp/client.py related_recipes '{"material":"nullius-methanol","direction":"producers","available_only":true,"force":"faction-a632079"}'
+recipe-mcp/.venv/Scripts/python.exe recipe-mcp/client.py validate_plan '{"recipe_rates":{"nullius-fermentation":1},"force":"faction-a632079"}'
+```
+
+也可由客户端调用start.ps1启动前台stdio服务；它不会自行创建后台窗口，stdout专用于协议。
+
+## 文件与复算
+
+- `data/script-output/data-raw-dump.json`：所有最终原型。
+- `data/recipes.json`、`data/technologies.json`：便于阅读的摘要。
+- `data/manifest.json`、`data/mod-list.snapshot.json`：原型导出来源和哈希。
+- `data/progress.json`：各队伍科技与配方状态、来源和一致性验证。
+- `data/progress-*/`：隔离加载目录、存档副本、helper输出与日志，保留供核验。
+- `../factorio-recipe-progress-helper_0.1.0.zip`：helper安装包，内部为同名mod目录。
+
+甲醇计算现在默认按进度快照筛选配方、机器和插件；未知/锁定候选被排除。传入队伍后，输出到 `data/methanol-current-stage.json`，并包含每项阶段验证与原存档来源：
+
+```powershell
+recipe-mcp/.venv/Scripts/python.exe recipe-mcp/analyze_methanol.py --force faction-a632079
+recipe-mcp/.venv/Scripts/python.exe recipe-mcp/analyze_methanol.py --theoretical
+recipe-mcp/.venv/Scripts/python.exe recipe-mcp/check.py
+```
+
+--theoretical显式忽略当前研究，重算上一版假设科技阶段的14组对比，写入独立的methanol-analysis.json。当前阶段计算保留已导出的配方额外产能加成；科技过滤通过并不代表完整工厂可建，还需满足机器流体接口、原料供应、表面条件等。本甲醇计算仍限于已声明的空气/水合成链与设备/插件等级，不是所有生物链、插件塔或整数布局的全局最优。
+
+参考：[Factoriopedia官方介绍](https://www.factorio.com/blog/post/fff-397)、[LuaRecipe.enabled](https://lua-api.factorio.com/2.0.77/classes/LuaRecipe.html#enabled)、[LuaTechnology](https://lua-api.factorio.com/2.0.77/classes/LuaTechnology.html)。实现字段已对照本机2.0.77自带runtime-api.json，避免使用新版本才有的接口。

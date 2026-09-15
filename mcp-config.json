@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "factorio-recipes": {
+      "command": "G:/Programs/factorio/hotfix/recipe-mcp/.venv/Scripts/python.exe",
+      "args": ["G:/Programs/factorio/hotfix/recipe-mcp/server.py"]
+    }
+  }
+}

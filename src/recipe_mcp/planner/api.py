@@ -7,14 +7,17 @@ from typing import Any
 import numpy as np
 
 from ..database import Database
+from .disposal import disposal_defaults as disposal_defaults_for
+from .disposal import dispose
 from .limits import infeasibility_report, limit_rows, usage_report
 from .lp import ELASTIC_NOTE, solve_lp
 from .matrix import analyze_matrix, recipe_matrix, solve_matrix
 from .model import OBJECTIVES, TIME, Planner
-from .report import report
+from .report import add_totals, report
 from .schema import (
     BeaconSpec,
     Defaults,
+    DisposalMode,
     Limits,
     LineSpec,
     MachinePower,
@@ -24,11 +27,13 @@ from .schema import (
     ModuleSpec,
     Objective,
     Per,
+    PlanLine,
     PlanResult,
     ProductionMatrix,
     RateRequirement,
     SnapshotProvenance,
     SolverName,
+    Totals,
     WeightName,
     Weights,
 )
@@ -61,8 +66,11 @@ def plan(
     mode: Mode = 'targets',
     limits: Limits | Mapping[str, Any] | None = None,
     consume: Mapping[str, float] | None = None,
+    disposal: DisposalMode = 'report',
+    disposal_defaults: Defaults | Mapping[str, Any] | None = None,
 ) -> PlanResult:
     factor = TIME[per]
+    void_defaults = disposal_defaults_for(disposal_defaults)
     lim = limits if isinstance(limits, Limits) else Limits.model_validate(limits or {})
     p = Planner(db, force, validate_stage, research_productivity, mining_productivity)
     tgt: dict[str, float] = {}
@@ -134,6 +142,12 @@ def plan(
     out.warnings += sol.warnings
     usage, bottlenecks = usage_report(sol.constraints, mode, factor, per)
     infeasibility, suggestions = infeasibility_report(sol.infeasibility, factor, per)
+    void_rows: list[PlanLine] = []
+    void_totals: Totals | None = None
+    unhandled: list[str] = []
+    if disposal == 'report':
+        byproducts = {k: v for k, v in sol.surplus.items() if k not in tgt}
+        void_rows, void_totals, unhandled = dispose(p, byproducts, void_defaults, factor)
     if frontier:
         out.warnings.append(f'max_depth reached; treated as imports where needed: {frontier[:20]}')
     if truncated:
@@ -151,6 +165,10 @@ def plan(
     return PlanResult(
         **dict(out),
         status='infeasible' if infeasible else 'optimal',
+        disposal=void_rows,
+        disposal_totals=void_totals,
+        totals_with_disposal=add_totals(out.totals, void_totals) if void_totals else None,
+        disposal_unhandled=unhandled,
         infeasibility=infeasibility,
         suggestions=suggestions,
         note=ELASTIC_NOTE if infeasible else None,

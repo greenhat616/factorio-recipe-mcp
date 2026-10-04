@@ -1,5 +1,6 @@
 """Planner math on a synthetic prototype set with closed-form answers (no game data needed)."""
 
+import copy
 from typing import Any
 
 import pytest
@@ -428,3 +429,47 @@ def test_elastic_diagnosis_keeps_line_bounds_hard(db: Database) -> None:
 def test_infeasible_without_limits_keeps_the_plain_error(db: Database) -> None:
     with pytest.raises(ValueError, match='LP infeasible'):
         plan(db, {'petro': 1}, [LineSpec(recipe='aop', fixed_machines=1)], allow_surplus=False, validate_stage=False)
+
+
+def with_void(raw: JSON) -> JSON:
+    """RAW plus a light-oil void (10 per craft, 1 s) in a speed-2 stack and a speed-1 vent."""
+    out = copy.deepcopy(raw)
+    out['recipe']['void-light'] = {
+        'name': 'void-light',
+        'category': 'void',
+        'energy_required': 1,
+        'ingredients': [fluid('light', 10)],
+        'results': [{'type': 'item', 'name': 'void-token', 'amount': 1, 'probability': 0}],
+    }
+    for name, speed, usage in (('stack', 2, '100kW'), ('vent', 1, '1kW')):
+        out['assembling-machine'][name] = {
+            'crafting_speed': speed,
+            'crafting_categories': ['void'],
+            'energy_usage': usage,
+            'energy_source': {'type': 'electric', 'drain': '0W'},
+            'fluid_boxes': [{'production_type': 'input'}],
+        }
+    return out
+
+
+def test_disposal_counts_void_machines() -> None:
+    db = Database(raw=with_void(RAW))
+    r = plan(db, {'petro': 55}, ['aop'], validate_stage=False)
+    # 45 light/s: vent is the efficient default (1 kW per speed vs 50 kW): 45 / (10 x 1) = 4.5 vents.
+    (row,) = r.disposal
+    assert (row.recipe, row.machine) == ('void-light', 'vent') and row.machines == approx(4.5, 1e-7)
+    assert r.disposal_unhandled == ['fluid:heavy']
+    assert r.disposal_totals is not None and r.disposal_totals.power_MW == approx(4.5 * 0.001, 1e-7)
+    assert r.totals_with_disposal is not None
+    assert r.totals_with_disposal.machines == approx(r.totals.machines + 4.5, 1e-7)
+    fast = plan(db, {'petro': 55}, ['aop'], disposal_defaults={'machine_preference': 'fastest'}, validate_stage=False)
+    assert fast.disposal[0].machine == 'stack' and fast.disposal[0].machines == approx(2.25, 1e-7)
+    none = plan(db, {'petro': 55}, ['aop'], disposal='none', validate_stage=False)
+    assert none.disposal == [] and none.disposal_totals is None
+
+
+def test_disposal_does_not_change_the_route() -> None:
+    db = Database(raw=with_void(RAW))
+    a = plan(db, {'petro': 55}, ['aop', 'hc'], validate_stage=False)
+    b = plan(db, {'petro': 55}, ['aop', 'hc'], disposal='none', validate_stage=False)
+    assert a.totals == b.totals

@@ -12,6 +12,7 @@ Per = Literal['second', 'minute', 'hour']
 SolverName = Literal['lp', 'matrix']
 Objective = Literal['balanced', 'machines', 'power', 'imports']
 Mode = Literal['targets', 'maximize']
+DisposalMode = Literal['report', 'none']
 
 
 class BeaconSpec(Spec):
@@ -355,6 +356,10 @@ class PlanResult(Report):
     )
     suggestions: list[str] = []
     note: str | None = None
+    disposal: list[PlanLine] = Field([], description='Void machines for each surplus byproduct (disposal="report")')
+    disposal_totals: Totals | None = None
+    totals_with_disposal: Totals | None = None
+    disposal_unhandled: list[str] = Field([], description='Surplus items with no usable void recipe')
     candidate_lines: int
     excluded_candidates: list[ExcludedCandidate]
     lines_for_matrix: list[LineSpec] = Field(description='Pass back as `lines` to pin this plan')

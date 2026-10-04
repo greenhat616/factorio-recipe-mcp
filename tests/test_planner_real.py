@@ -3,7 +3,8 @@
 import pytest
 
 from recipe_mcp.database import Database
-from recipe_mcp.planner import LineSpec, machine_stats, plan
+from recipe_mcp.planner import LineSpec, Planner, machine_stats, plan
+from recipe_mcp.planner.disposal import void_recipes
 from recipe_mcp.planner.schema import PlanResult
 
 pytestmark = pytest.mark.realdata
@@ -80,3 +81,12 @@ def test_consume_limestone_scales_pinned_route(real_db: Database, force: str, me
     flow = next(i for i in r.items if i.item == 'item:nullius-box-limestone')
     assert flow.supplied + flow.produced - flow.consumed == pytest.approx(0, abs=1e-6)
     assert flow.imported == 0 and flow.surplus == 0
+
+
+def test_void_recipes_found(real_db: Database, force: str) -> None:
+    assert sum(len(v) for v in void_recipes(Planner(real_db, force)).values()) == 42
+
+
+def test_surplus_oxygen_goes_to_an_unpowered_chimney(methanol: PlanResult) -> None:
+    row = next(d for d in methanol.disposal if d.id == 'dispose:fluid:nullius-compressed-oxygen')
+    assert row.machine == 'nullius-chimney-2' and row.power_MW == 0

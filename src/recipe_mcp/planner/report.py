@@ -8,6 +8,46 @@ from .model import EPS, Planner
 from .schema import ItemFlow, Line, PlanLine, Report, Solution, Totals
 
 
+def plan_line(r: Line, x: float, factor: float) -> PlanLine:
+    """One line running x crafts per second (internal units), reported per `per`."""
+    machines = x / r.crafts_per_machine
+    count = math.ceil(machines - 1e-6) if machines > 0 else 0
+    fuel = machines * r.active_W if not r.electric and r.energy_type != 'void' else 0
+    return PlanLine(
+        id=r.id,
+        recipe=r.recipe,
+        machine=r.machine,
+        modules=r.modules,
+        beacons=r.beacons,
+        crafts=x * factor,
+        machines=machines,
+        machines_ceil=count,
+        speed_multiplier=r.speed_multiplier,
+        productivity=r.productivity,
+        consumption_multiplier=r.consumption_multiplier,
+        power_MW=machines * r.power_W / 1e6,
+        installed_power_MW=count * r.power_W / 1e6,
+        energy_type=r.energy_type,
+        fuel_MW=fuel / 1e6,
+        pollution_per_minute=machines * r.pollution_per_minute,
+        inputs={k: -v * x * factor for k, v in r.balance.items() if v < 0},
+        outputs={k: v * x * factor for k, v in r.balance.items() if v > 0},
+    )
+
+
+def add_line(total: Totals, row: PlanLine) -> None:
+    total.machines += row.machines
+    total.machines_ceil += row.machines_ceil
+    total.power_MW += row.power_MW
+    total.installed_power_MW += row.installed_power_MW
+    total.non_electric_fuel_MW += row.fuel_MW
+    total.pollution_per_minute += row.pollution_per_minute
+
+
+def add_totals(total: Totals, other: Totals) -> Totals:
+    return Totals.model_validate({k: getattr(total, k) + v for k, v in other.model_dump().items()})
+
+
 def report(
     planner: Planner,
     lines: Sequence[Line],
@@ -23,41 +63,14 @@ def report(
     for r, x in zip(lines, solution.x, strict=True):
         if abs(x) < EPS:
             continue
-        machines = x / r.crafts_per_machine
-        count = math.ceil(machines - 1e-6) if machines > 0 else 0
-        fuel = machines * r.active_W if not r.electric and r.energy_type != 'void' else 0
         for k, v in r.balance.items():
             if v * x > 0:
                 flows[k].produced += v * x
             else:
                 flows[k].consumed += abs(v * x)
-        row = PlanLine(
-            id=r.id,
-            recipe=r.recipe,
-            machine=r.machine,
-            modules=r.modules,
-            beacons=r.beacons,
-            crafts=x * factor,
-            machines=machines,
-            machines_ceil=count,
-            speed_multiplier=r.speed_multiplier,
-            productivity=r.productivity,
-            consumption_multiplier=r.consumption_multiplier,
-            power_MW=machines * r.power_W / 1e6,
-            installed_power_MW=count * r.power_W / 1e6,
-            energy_type=r.energy_type,
-            fuel_MW=fuel / 1e6,
-            pollution_per_minute=machines * r.pollution_per_minute,
-            inputs={k: -v * x * factor for k, v in r.balance.items() if v < 0},
-            outputs={k: v * x * factor for k, v in r.balance.items() if v > 0},
-        )
+        row = plan_line(r, x, factor)
         rows.append(row)
-        total.machines += row.machines
-        total.machines_ceil += row.machines_ceil
-        total.power_MW += row.power_MW
-        total.installed_power_MW += row.installed_power_MW
-        total.non_electric_fuel_MW += row.fuel_MW
-        total.pollution_per_minute += row.pollution_per_minute
+        add_line(total, row)
     for k, v in solution.imports.items():
         flows[k].imported = v
     for k, v in solution.surplus.items():

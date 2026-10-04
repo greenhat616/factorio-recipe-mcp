@@ -23,6 +23,7 @@ from .planner import production_matrix as planner_matrix
 from .planner.schema import (
     BeaconSpec,
     Defaults,
+    DisposalMode,
     Limits,
     LineSpec,
     MachineStats,
@@ -202,6 +203,8 @@ def create_server(db: Database) -> FastMCP:
         mode: Mode = 'targets',
         limits: Limits | None = None,
         consume: dict[str, float] = {},
+        disposal: DisposalMode = 'report',
+        disposal_defaults: Defaults | None = None,
     ) -> PlanResult:
         """Helmod/Factory Planner style rate calculator: machine counts, modules/beacons, power, imports, byproducts.
 
@@ -220,6 +223,10 @@ def create_server(db: Database) -> FastMCP:
                 Returns limits_usage for every limit and bottlenecks for binding ones with their marginal value.
         consume: {material: rate per `per`} supplied externally and used up exactly (Helmod input mode); never
                 imported or left as surplus. With the matrix solver targets may be empty: outputs become byproducts.
+        disposal='report' (default): void machines (chimneys, outfalls) for each surplus byproduct, chosen with
+                disposal_defaults (machine_preference defaults to efficient); reported in disposal, disposal_totals
+                and totals_with_disposal (totals itself excludes them); disposal_unhandled lists items with no void.
+                Never affects route choice. disposal='none' skips it.
         Stage-locked recipes/machines/modules are rejected unless validate_stage=false.
         Feed result.lines_for_matrix back as `lines` (with result.matrix_args for the matrix solver) to pin a plan."""
         return plan(
@@ -249,6 +256,8 @@ def create_server(db: Database) -> FastMCP:
             mode=mode,
             limits=limits,
             consume=consume,
+            disposal=disposal,
+            disposal_defaults=disposal_defaults,
         )
 
     @mcp.tool()

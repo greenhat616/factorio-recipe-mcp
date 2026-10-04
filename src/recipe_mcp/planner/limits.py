@@ -37,12 +37,33 @@ def limit_rows(p: Planner, lines: Sequence[Line], limits: Limits, factor: float)
         rows.append(
             LimitRow(name=f'machines_by_type:{machine}', limit=check_cap(machine, cap), coef=coef, unit='machine')
         )
+    if limits.beacons is not None:
+        coef = [r.beacon_entities / r.crafts_per_machine for r in lines]
+        rows.append(LimitRow(name='beacons', limit=limits.beacons, coef=coef, unit='beacon'))
+    for name, cap in limits.beacons_by_type.items():
+        item = beacon_item_named(p, name)
+        coef = [r.beacon_items.get(item, 0.0) / r.crafts_per_machine for r in lines]
+        rows.append(LimitRow(name=f'beacons_by_type:{item}', limit=check_cap(name, cap), coef=coef, unit='beacon'))
+    for module, cap in limits.modules.items():
+        if module not in p.raw.get('module', {}):
+            raise ValueError(f'Unknown module in limits.modules: {module}')
+        coef = [r.module_counts.get(module, 0.0) / r.crafts_per_machine for r in lines]
+        rows.append(LimitRow(name=f'modules:{module}', limit=check_cap(module, cap), coef=coef, unit='module'))
     if limits.pollution_per_minute is not None:
         coef = [r.pollution_per_minute / r.crafts_per_machine for r in lines]
         rows.append(
             LimitRow(name='pollution_per_minute', limit=limits.pollution_per_minute, coef=coef, unit='pollution/minute')
         )
     return rows
+
+
+def beacon_item_named(p: Planner, name: str) -> str:
+    """A beacon entity (incl. interference variants) or the item that places one -> the beacon item."""
+    if name in p.raw.get('beacon', {}):
+        return p.beacon_item(name)
+    if any(p.beacon_item(b) == name for b in p.raw.get('beacon', {})):
+        return name
+    raise ValueError(f'Unknown beacon in limits.beacons_by_type: {name}')
 
 
 def usage_report(

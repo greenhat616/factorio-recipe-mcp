@@ -22,6 +22,12 @@ class BeaconSpec(Spec):
     per_machine: float | None = Field(
         None, ge=0, description='Beacons powered per machine when shared; defaults to count'
     )
+    interference: int = Field(
+        0,
+        ge=0,
+        le=4,
+        description='Nullius small beacon covered by k large-beacon interference fields: uses variant <beacon>-<k>',
+    )
 
 
 class LineSpec(Spec):
@@ -41,6 +47,9 @@ class Defaults(Spec):
     machines: list[str] = Field([], description='Preferred machine names, first compatible wins')
     modules: list[str] = Field([], description='Priority list; the first compatible module fills all slots')
     beacons: list[BeaconSpec] = []
+    module_options: list[JSON] | None = Field(
+        None, description='Reserved: one candidate line per module configuration. Not implemented yet.'
+    )
 
 
 class Limits(Spec):
@@ -49,6 +58,9 @@ class Limits(Spec):
     machines: float | None = Field(None, ge=0, description='Fractional production machines, excl. beacons and disposal')
     machines_by_type: dict[str, float] = Field({}, description='Fractional machine count cap per machine name')
     pollution_per_minute: float | None = Field(None, ge=0)
+    beacons: float | None = Field(None, ge=0, description='Fractional beacon entities (per_machine share)')
+    beacons_by_type: dict[str, float] = Field({}, description='Beacon cap per beacon entity or item name')
+    modules: dict[str, float] = Field({}, description='Module cap per module name, machine and beacon slots')
 
 
 class LimitRow(BaseModel):
@@ -93,9 +105,12 @@ class Weights(BaseModel):
     power_MW: float
     imports: float
     surplus: float
+    # Reserved: cost per beacon and per module. Not implemented yet; must stay 0.
+    beacons: float = 0.0
+    modules: float = 0.0
 
 
-WeightName = Literal['machines', 'power_MW', 'imports', 'surplus']
+WeightName = Literal['machines', 'power_MW', 'imports', 'surplus', 'beacons', 'modules']
 
 
 class RecipeEntry(BaseModel):
@@ -156,7 +171,10 @@ class TemperatureRange(BaseModel):
 
 
 class BeaconRow(BaseModel):
-    beacon: str
+    beacon: str = Field(description='As given in the spec')
+    entity: str = Field(description='Beacon prototype used, after resolving interference')
+    item: str = Field(description='Item that places the beacon; variants count as their base beacon')
+    interference: int
     count: int
     modules: list[str]
     per_machine: float
@@ -190,6 +208,12 @@ class Line(BaseModel):
     max_machines: float | None
     cost_weight: float
     blocked: list[str]
+    beacon_items: dict[str, float] = Field({}, description='Beacon entities per machine, by beacon item')
+    module_counts: dict[str, float] = Field({}, description='Modules per machine: own slots + shared beacon slots')
+
+    @property
+    def beacon_entities(self) -> float:
+        return sum(self.beacon_items.values())
 
     @property
     def electric(self) -> bool:
@@ -208,7 +232,13 @@ class Line(BaseModel):
             machine=self.machine,
             modules=self.modules,
             beacons=[
-                BeaconSpec(beacon=b.beacon, count=b.count, modules=b.modules, per_machine=b.per_machine)
+                BeaconSpec(
+                    beacon=b.beacon,
+                    count=b.count,
+                    modules=b.modules,
+                    per_machine=b.per_machine,
+                    interference=b.interference,
+                )
                 for b in self.beacons
             ],
         )
@@ -263,6 +293,9 @@ class PlanLine(BaseModel):
     pollution_per_minute: float
     inputs: dict[str, float]
     outputs: dict[str, float]
+    beacon_count: float = Field(0.0, description='machines x beacons per machine (per_machine share)')
+    beacon_count_ceil: int = Field(0, description='ceil(machines_ceil x beacons per machine)')
+    beacon_power_MW: float = 0.0
 
 
 class ItemFlow(BaseModel):
@@ -282,6 +315,15 @@ class Totals(BaseModel):
     installed_power_MW: float = 0.0
     non_electric_fuel_MW: float = 0.0
     pollution_per_minute: float = 0.0
+    beacon_count: float = 0.0
+    beacon_count_ceil: int = 0
+    beacon_count_by_type: dict[str, float] = Field({}, description='Fractional beacons by beacon item')
+    beacon_power_MW: float = Field(0.0, description='Part of power_MW drawn by beacons')
+
+
+class ModuleCount(BaseModel):
+    count: float = Field(description='Fractional: machines x modules per machine')
+    count_ceil: int = Field(description='From rounded-up machines and beacons')
 
 
 class Report(BaseModel):
@@ -360,6 +402,9 @@ class PlanResult(Report):
     disposal_totals: Totals | None = None
     totals_with_disposal: Totals | None = None
     disposal_unhandled: list[str] = Field([], description='Surplus items with no usable void recipe')
+    module_inventory: dict[str, ModuleCount] = Field(
+        {}, description='Modules in machine and beacon slots of all lines and disposal machines'
+    )
     candidate_lines: int
     excluded_candidates: list[ExcludedCandidate]
     lines_for_matrix: list[LineSpec] = Field(description='Pass back as `lines` to pin this plan')
@@ -403,6 +448,8 @@ class MachineStats(BaseModel):
     per_machine: dict[str, float]
     power_per_machine_MW: MachinePower
     pollution_per_minute_per_machine: float
+    beacon_items: dict[str, float] = Field(description='Beacon entities per machine, by beacon item')
+    module_counts: dict[str, float] = Field(description='Modules per machine incl. its share of beacon modules')
     valid_at_stage: bool | None
     alternatives: list[str]
     warnings: list[str]

@@ -120,6 +120,14 @@ async def run(db: Database, force: str) -> None:
             assert mx_scale['scale'] > 0 and mx_scale['bottlenecks']
             stats = (await call('machine_stats', {'recipe': 'nullius-methanol', 'rate': 10, 'force': force}))[0]
             assert stats['valid_at_stage'] and stats['for_rate']['machines'] > 0
+            beacon = {'beacon': 'nullius-beacon-2', 'interference': 3, 'modules': ['nullius-speed-module-1']}
+            boosted = (
+                await call(
+                    'machine_stats', {'recipe': 'nullius-methanol', 'beacons': [beacon], 'validate_stage': False}
+                )
+            )[0]
+            assert boosted['beacons'][0]['entity'] == 'nullius-beacon-2-3'
+            assert boosted['beacon_items'] == {'nullius-beacon-2': 1}
             pm = (
                 await call(
                     'production_matrix',

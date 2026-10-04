@@ -3,7 +3,7 @@
 import pytest
 
 from recipe_mcp.database import Database
-from recipe_mcp.planner import LineSpec, Planner, machine_stats, plan
+from recipe_mcp.planner import BeaconSpec, LineSpec, Planner, machine_stats, plan
 from recipe_mcp.planner.disposal import void_recipes
 from recipe_mcp.planner.schema import PlanResult
 
@@ -90,3 +90,11 @@ def test_void_recipes_found(real_db: Database, force: str) -> None:
 def test_surplus_oxygen_goes_to_an_unpowered_chimney(methanol: PlanResult) -> None:
     row = next(d for d in methanol.disposal if d.id == 'dispose:fluid:nullius-compressed-oxygen')
     assert row.machine == 'nullius-chimney-2' and row.power_MW == 0
+
+
+def test_nullius_beacon_interference(real_db: Database) -> None:
+    beacon = BeaconSpec(beacon='nullius-beacon-2', interference=3, modules=['nullius-speed-module-1'])
+    st = machine_stats(real_db, 'nullius-methanol', beacons=[beacon], validate_stage=False)
+    (row,) = st.beacons
+    assert row.entity == 'nullius-beacon-2-3' and row.item == 'nullius-beacon-2'
+    assert row.effect_factor == pytest.approx(0.24) and st.power_per_machine_MW.beacons == pytest.approx(0.12)

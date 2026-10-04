@@ -238,12 +238,19 @@ class Planner:
         return max(opts, key=lambda o: (speed(o), -energy(o), o.name))
 
     def module_problems(
-        self, module: str, allowed: set[str], recipe_allow: Mapping[str, bool], where: str
+        self,
+        module: str,
+        allowed: set[str],
+        recipe_allow: Mapping[str, bool],
+        where: str,
+        categories: Sequence[str] | None = None,
     ) -> list[str]:
         proto = self.raw.get('module', {}).get(module)
         if proto is None:
             return [f'{where}: unknown module {module}']
         out: list[str] = []
+        if categories is not None and proto.get('category') not in categories:
+            out.append(f'{where}: {module} category {proto.get("category")} not allowed by entity')
         for eff, v in proto.get('effect', {}).items():
             if beneficial(eff, v) and eff not in allowed:
                 out.append(f'{where}: {module} {eff} not allowed by entity')
@@ -251,9 +258,37 @@ class Planner:
                 out.append(f'{where}: {module} {eff} not allowed by recipe')
         return out
 
+    def beacon_item(self, name: str) -> str:
+        """The item that places a beacon entity; Nullius interference variants name their base beacon."""
+        proto = self.raw.get('beacon', {}).get(name)
+        if proto is None:
+            raise ValueError(f'Unknown beacon: {name}')
+        place = proto.get('placeable_by')
+        if isinstance(place, list):
+            place = place[0] if place else None
+        item = place.get('item') if isinstance(place, dict) else None
+        return item or (proto.get('minable') or {}).get('result') or name
+
+    def resolve_beacon(self, name: str, interference: int) -> tuple[str, str, int]:
+        """(entity, item, interference): interference k picks the variant <beacon>-<k> placed by the same item."""
+        item = self.beacon_item(name)
+        implied = next((k for k in range(1, 5) if name == f'{item}-{k}'), 0)
+        if implied:
+            if interference not in (0, implied):
+                raise ValueError(f'{name} is interference variant {implied}, but interference={interference}')
+            return name, item, implied
+        if interference == 0:
+            return name, item, 0
+        variant = f'{name}-{interference}'
+        if variant not in self.raw.get('beacon', {}) or self.beacon_item(variant) != item:
+            raise ValueError(f'{name} has no interference variant {interference}; it is not subject to interference')
+        return variant, item, interference
+
     def line(self, spec: str | LineSpec, defaults: Defaults | None = None) -> Line:
         """Normalise one line spec into its per-craft balance, rates, power and gates."""
         defaults = defaults or Defaults()
+        if defaults.module_options is not None:
+            raise ValueError('defaults.module_options is reserved and not implemented yet')
         if isinstance(spec, str):
             spec = LineSpec(recipe=spec)
         recipe = self.recipe_view(spec.recipe)
@@ -274,6 +309,7 @@ class Planner:
                 raise ValueError(f'No {buildable}machine for {recipe.name} (category {recipe.category})')
         m = hit.proto
         allowed = set(m.get('allowed_effects', []))
+        categories = m.get('allowed_module_categories')
         receiver = m.get('effect_receiver') or {}
         slots = m.get('module_slots', 0) or 0
 
@@ -284,7 +320,7 @@ class Planner:
             for mod in defaults.modules:
                 if (
                     slots
-                    and not self.module_problems(mod, allowed, recipe.allow, 'machine')
+                    and not self.module_problems(mod, allowed, recipe.allow, 'machine', categories)
                     and (not self.validate or self.buildable(item=mod) is True)
                 ):
                     modules = [mod] * slots
@@ -293,38 +329,60 @@ class Planner:
             problems.append(f'{len(modules)} modules exceed {slots} slots of {hit.name}')
         effects: defaultdict[str, float] = defaultdict(float)
         for mod in modules:
-            problems += self.module_problems(mod, allowed, recipe.allow, hit.name)
+            problems += self.module_problems(mod, allowed, recipe.allow, hit.name, categories)
             if receiver.get('uses_module_effects', True):
                 for eff, v in self.raw['module'].get(mod, {}).get('effect', {}).items():
                     effects[eff] += v
         beacons = defaults.beacons if spec.beacons is None else spec.beacons
+        resolved = [self.resolve_beacon(b.beacon, b.interference) for b in beacons]
         total = sum(b.count for b in beacons)
         beacon_W = 0.0
         beacon_rows: list[BeaconRow] = []
-        for b in beacons:
-            bp = self.raw.get('beacon', {}).get(b.beacon)
-            if bp is None:
-                raise ValueError(f'Unknown beacon: {b.beacon}')
+        beacon_items: defaultdict[str, float] = defaultdict(float)
+        module_counts: defaultdict[str, float] = defaultdict(float)
+        for mod in modules:
+            module_counts[mod] += 1
+        for b, (entity, item, level) in zip(beacons, resolved, strict=True):
+            bp = self.raw['beacon'][entity]
             bmods = module_list(b.modules)
             if len(bmods) > bp.get('module_slots', 0):
-                problems.append(f'{b.beacon}: {len(bmods)} modules exceed slots')
-            same = sum(x.count for x in beacons if x.beacon == b.beacon)
+                problems.append(f'{entity}: {len(bmods)} modules exceed slots')
+            same = sum(x.count for x, r in zip(beacons, resolved, strict=True) if r[0] == entity)
             n = same if bp.get('beacon_counter') == 'same_type' else total
             profile = bp.get('profile') or [1]
             factor = bp.get('distribution_effectivity', 1) * profile[min(max(n, 1), len(profile)) - 1]
             for mod in bmods:
-                problems += self.module_problems(mod, set(bp.get('allowed_effects', [])), recipe.allow, b.beacon)
+                problems += self.module_problems(
+                    mod,
+                    set(bp.get('allowed_effects', [])),
+                    recipe.allow,
+                    entity,
+                    bp.get('allowed_module_categories'),
+                )
                 if receiver.get('uses_beacon_effects', True):
                     for eff, v in self.raw['module'].get(mod, {}).get('effect', {}).items():
                         effects[eff] += v * factor * b.count
             per_machine = b.count if b.per_machine is None else b.per_machine
             beacon_W += per_machine * watts(bp.get('energy_usage'))
+            beacon_items[item] += per_machine
+            # A shared beacon holds its modules once, so they count per beacon entity, not per effect.
+            for mod in bmods:
+                module_counts[mod] += per_machine
             beacon_rows.append(
-                BeaconRow(beacon=b.beacon, count=b.count, modules=bmods, per_machine=per_machine, effect_factor=factor)
+                BeaconRow(
+                    beacon=b.beacon,
+                    entity=entity,
+                    item=item,
+                    interference=level,
+                    count=b.count,
+                    modules=bmods,
+                    per_machine=per_machine,
+                    effect_factor=factor,
+                )
             )
             if self.validate:
-                if self.buildable(entity=b.beacon) is not True:
-                    blocked.append(f'beacon {b.beacon}')
+                if self.buildable(entity=entity) is not True:
+                    blocked.append(f'beacon {entity}')
                 blocked += [f'module {x}' for x in sorted(set(bmods)) if self.buildable(item=x) is not True]
         for eff, v in (receiver.get('base_effect') or {}).items():
             effects[eff] += v
@@ -391,6 +449,8 @@ class Planner:
             max_machines=spec.max_machines,
             cost_weight=spec.cost_weight,
             blocked=blocked,
+            beacon_items={k: v for k, v in beacon_items.items() if v},
+            module_counts={k: v for k, v in module_counts.items() if v},
         )
 
     def auto_ok(self, name: str, include_hidden: bool) -> bool:

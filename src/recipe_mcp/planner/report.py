@@ -2,10 +2,10 @@
 
 import math
 from collections import defaultdict
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 
 from .model import EPS, Planner
-from .schema import ItemFlow, Line, PlanLine, Report, Solution, Totals
+from .schema import ItemFlow, Line, ModuleCount, PlanLine, Report, Solution, Totals
 
 
 def plan_line(r: Line, x: float, factor: float) -> PlanLine:
@@ -32,6 +32,9 @@ def plan_line(r: Line, x: float, factor: float) -> PlanLine:
         pollution_per_minute=machines * r.pollution_per_minute,
         inputs={k: -v * x * factor for k, v in r.balance.items() if v < 0},
         outputs={k: v * x * factor for k, v in r.balance.items() if v > 0},
+        beacon_count=machines * r.beacon_entities,
+        beacon_count_ceil=math.ceil(count * r.beacon_entities - 1e-6) if count else 0,
+        beacon_power_MW=machines * r.beacon_W / 1e6,
     )
 
 
@@ -42,10 +45,42 @@ def add_line(total: Totals, row: PlanLine) -> None:
     total.installed_power_MW += row.installed_power_MW
     total.non_electric_fuel_MW += row.fuel_MW
     total.pollution_per_minute += row.pollution_per_minute
+    total.beacon_count += row.beacon_count
+    total.beacon_count_ceil += row.beacon_count_ceil
+    total.beacon_power_MW += row.beacon_power_MW
+    by_type = dict(total.beacon_count_by_type)
+    for b in row.beacons:
+        by_type[b.item] = by_type.get(b.item, 0.0) + row.machines * b.per_machine
+    total.beacon_count_by_type = by_type
 
 
 def add_totals(total: Totals, other: Totals) -> Totals:
-    return Totals.model_validate({k: getattr(total, k) + v for k, v in other.model_dump().items()})
+    out = total.model_copy(deep=True)
+    for k, v in other.model_dump().items():
+        if isinstance(v, dict):
+            merged = dict(getattr(out, k))
+            for name, n in v.items():
+                merged[name] = merged.get(name, 0.0) + n
+            setattr(out, k, merged)
+        else:
+            setattr(out, k, getattr(out, k) + v)
+    return out
+
+
+def module_inventory(rows: Iterable[PlanLine]) -> dict[str, ModuleCount]:
+    """Modules in machine slots plus beacon slots; shared beacons hold their modules once."""
+    count: defaultdict[str, float] = defaultdict(float)
+    ceil: defaultdict[str, int] = defaultdict(int)
+    for row in rows:
+        for mod in row.modules:
+            count[mod] += row.machines
+            ceil[mod] += row.machines_ceil
+        for b in row.beacons:
+            beacons_ceil = math.ceil(row.machines_ceil * b.per_machine - 1e-6) if row.machines_ceil else 0
+            for mod in b.modules:
+                count[mod] += row.machines * b.per_machine
+                ceil[mod] += beacons_ceil
+    return {k: ModuleCount(count=count[k], count_ceil=ceil[k]) for k in sorted(count)}
 
 
 def report(

@@ -13,7 +13,7 @@ from .limits import infeasibility_report, limit_rows, usage_report
 from .lp import ELASTIC_NOTE, solve_lp
 from .matrix import analyze_matrix, recipe_matrix, solve_matrix
 from .model import OBJECTIVES, TIME, Planner
-from .report import add_totals, report
+from .report import add_totals, module_inventory, report
 from .schema import (
     BeaconSpec,
     Defaults,
@@ -127,6 +127,8 @@ def plan(
         raise ValueError('Nothing sets the scale: give targets, consume or a line with fixed_machines')
     if solver == 'lp':
         w = Weights.model_validate({**OBJECTIVES[objective].model_dump(), **(weights or {})})
+        if w.beacons or w.modules:
+            raise ValueError('weights.beacons and weights.modules are reserved and not implemented yet')
         limit_list = limit_rows(p, rows, lim, factor)
         sol = solve_lp(rows, tgt, import_keys, forbid, costs, allow_surplus, surplus, w, mode, limit_list, supply)
     else:
@@ -169,6 +171,7 @@ def plan(
         disposal_totals=void_totals,
         totals_with_disposal=add_totals(out.totals, void_totals) if void_totals else None,
         disposal_unhandled=unhandled,
+        module_inventory=module_inventory([*out.lines, *void_rows]),
         infeasibility=infeasibility,
         suggestions=suggestions,
         note=ELASTIC_NOTE if infeasible else None,
@@ -253,6 +256,8 @@ def machine_stats(
         per_machine={k: v * r.crafts_per_machine * factor for k, v in r.balance.items()},
         power_per_machine_MW=MachinePower(active=r.active_W / 1e6, drain=r.drain_W / 1e6, beacons=r.beacon_W / 1e6),
         pollution_per_minute_per_machine=r.pollution_per_minute,
+        beacon_items=r.beacon_items,
+        module_counts=r.module_counts,
         valid_at_stage=not r.blocked if validate_stage else None,
         alternatives=[m.name for m in p.candidates(p.recipe_view(recipe))],
         warnings=p.warnings,

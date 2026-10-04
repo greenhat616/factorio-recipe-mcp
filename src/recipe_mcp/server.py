@@ -219,8 +219,15 @@ def create_server(db: Database) -> FastMCP:
         mode='maximize' (lp only): targets are ratios; returns the largest `scale` (output = scale x ratio per `per`)
                 that fits `limits`, then the cheapest plan at that scale.
         limits (lp only): {imports: {item: rate per `per`}, power_MW, machines, machines_by_type: {machine: count},
-                pollution_per_minute}. Capped imports are allowed even when the item has a producing line.
+                beacons, beacons_by_type: {beacon: count}, modules: {module: count}, pollution_per_minute}.
+                machines excludes beacons; beacons count entities by per_machine share; modules count machine slots
+                plus beacon slots. Capped imports are allowed even when the item has a producing line.
                 Returns limits_usage for every limit and bottlenecks for binding ones with their marginal value.
+                Several lines of one recipe with different modules (distinct ids) let limits.modules allocate them.
+        Beacons: count = beacons affecting each machine (effect), per_machine = beacon entities per machine (power,
+                counts; less than count when shared). interference=k uses the Nullius variant <beacon>-k.
+                Results give beacon_count / beacon_count_ceil / beacon_power_MW per line and in totals,
+                totals.beacon_count_by_type and module_inventory.
         consume: {material: rate per `per`} supplied externally and used up exactly (Helmod input mode); never
                 imported or left as surplus. With the matrix solver targets may be empty: outputs become byproducts.
         disposal='report' (default): void machines (chimneys, outfalls) for each surplus byproduct, chosen with
@@ -276,7 +283,9 @@ def create_server(db: Database) -> FastMCP:
         validate_stage: bool = True,
     ) -> MachineStats:
         """One recipe in one machine: effective speed/productivity/consumption, I/O per machine, power, pollution.
-        With rate (and optional item, default main output) returns machines needed. recipe may be "mining:<resource>"."""
+        With rate (and optional item, default main output) returns machines needed. recipe may be "mining:<resource>".
+        beacons[].interference=k uses the Nullius interference variant <beacon>-k; beacon_items and module_counts
+        give beacon entities and modules per machine (shared beacons by per_machine)."""
         return planner_machine_stats(
             db,
             recipe,

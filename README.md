@@ -1,6 +1,6 @@
 # Factorio 配方、科技与存档进度 MCP
 
-MCP 使用 **stdio**，由客户端启动 `python -m recipe_mcp`（或 `recipe-mcp` 命令）并管理进程，不监听HTTP端口。旧HTTP服务已停止。安装好的配置见 `mcp-config.json`：
+MCP 使用 **stdio**，由客户端启动 `python -m recipe_mcp`（或 `recipe-mcp-server` 命令）并管理进程，不监听HTTP端口。旧HTTP服务已停止。安装好的配置见 `mcp-config.json`：
 
 ```json
 {
@@ -23,7 +23,7 @@ MCP 使用 **stdio**，由客户端启动 `python -m recipe_mcp`（或 `recipe-m
 uv sync --directory recipe-mcp
 ```
 
-依赖锁定在 `pyproject.toml` / `uv.lock`；`uv sync` 会按锁文件重建 `.venv`，并以可编辑方式安装本项目（`src/recipe_mcp`），生成 `recipe-mcp`、`recipe-mcp-client`、`recipe-mcp-export`、`recipe-mcp-export-save` 四个命令。以下命令均以 `uv run --directory recipe-mcp <命令>` 运行。
+依赖锁定在 `pyproject.toml` / `uv.lock`；`uv sync` 会按锁文件重建 `.venv`，并以可编辑方式安装本项目（`src/recipe_mcp`），生成 `recipe-mcp-server`、`recipe-mcp-cli`、`recipe-mcp-export`、`recipe-mcp-export-save` 四个命令。以下命令均以 `uv run --directory recipe-mcp <命令>` 运行。
 
 导出当前模组的最终配方、机器、科技原型：
 
@@ -44,7 +44,7 @@ uv run --directory recipe-mcp recipe-mcp-export-save --save 'C:/Users/a6320/AppD
 
 导出器同时比较全部原配方的时间、类别、投入/产出及全部模组数据阶段校验值，忽略helper自身的零数据校验值。数量归一化到小数后6位，兼容游戏对极小物流占位数量的定点化。两者均匹配且原始原型文件SHA256一致时，MCP才允许用进度过滤和验证；不匹配时返回unknown并拒绝阶段计算。不要把旧存档进度与更新后的模组数据混用。
 
-重新导出后重启MCP客户端中的服务进程，或重新运行一次性 `recipe-mcp-client`，即可读取新快照。
+重新导出后重启MCP客户端中的服务进程，或重新运行一次性 `recipe-mcp-cli`，即可读取新快照。
 
 ## 科技锁模型
 
@@ -98,22 +98,22 @@ uv run --directory recipe-mcp recipe-mcp-export-save --save 'C:/Users/a6320/AppD
 未建模：品质、表面效果、传送带/管道吞吐、流体矿产出衰减（按100%产量）、采矿机drain（未写时视为0）、热能/燃料机器的燃料链（单独报告为 `*_fuel_MW`）。流体温度只做告警检查。
 
 ```powershell
-uv run --directory recipe-mcp recipe-mcp-client solve_production '{"targets":{"nullius-methanol":600},"per":"minute","force":"faction-a632079"}'
-uv run --directory recipe-mcp recipe-mcp-client machine_stats '{"recipe":"nullius-methanol","rate":10,"force":"faction-a632079"}'
-uv run --directory recipe-mcp recipe-mcp-client solve_production '{"targets":{"nullius-methanol":10},"objective":"power","defaults":{"modules":["nullius-yield-module-2","nullius-speed-module-2"]},"force":"faction-a632079"}'
+uv run --directory recipe-mcp recipe-mcp-cli solve_production '{"targets":{"nullius-methanol":600},"per":"minute","force":"faction-a632079"}'
+uv run --directory recipe-mcp recipe-mcp-cli machine_stats '{"recipe":"nullius-methanol","rate":10,"force":"faction-a632079"}'
+uv run --directory recipe-mcp recipe-mcp-cli solve_production '{"targets":{"nullius-methanol":10},"objective":"power","defaults":{"modules":["nullius-yield-module-2","nullius-speed-module-2"]},"force":"faction-a632079"}'
 uv run --directory recipe-mcp pytest tests/test_planner_synthetic.py tests/test_planner_real.py
 ```
 
 ## 调用示例
 
-`recipe-mcp-client` 会用同一解释器启动 stdio 服务（`python -m recipe_mcp`）、完成调用并关闭子进程；不带参数时列出全部工具：
+`recipe-mcp-cli` 会用同一解释器启动 stdio 服务（`python -m recipe_mcp`）、完成调用并关闭子进程；不带参数时列出全部工具：
 
 ```powershell
-uv run --directory recipe-mcp recipe-mcp-client get_progress_context
-uv run --directory recipe-mcp recipe-mcp-client list_technologies '{"force":"faction-a632079","state":"researched","limit":20}'
-uv run --directory recipe-mcp recipe-mcp-client get_technology '{"name":"nullius-high-pressure-chemistry","force":"faction-a632079"}'
-uv run --directory recipe-mcp recipe-mcp-client related_recipes '{"material":"nullius-methanol","direction":"producers","available_only":true,"force":"faction-a632079"}'
-uv run --directory recipe-mcp recipe-mcp-client validate_plan '{"recipe_rates":{"nullius-fermentation":1},"force":"faction-a632079"}'
+uv run --directory recipe-mcp recipe-mcp-cli get_progress_context
+uv run --directory recipe-mcp recipe-mcp-cli list_technologies '{"force":"faction-a632079","state":"researched","limit":20}'
+uv run --directory recipe-mcp recipe-mcp-cli get_technology '{"name":"nullius-high-pressure-chemistry","force":"faction-a632079"}'
+uv run --directory recipe-mcp recipe-mcp-cli related_recipes '{"material":"nullius-methanol","direction":"producers","available_only":true,"force":"faction-a632079"}'
+uv run --directory recipe-mcp recipe-mcp-cli validate_plan '{"recipe_rates":{"nullius-fermentation":1},"force":"faction-a632079"}'
 ```
 
 也可由客户端调用start.ps1启动前台stdio服务；它不会自行创建后台窗口，stdout专用于协议。
@@ -133,8 +133,8 @@ recipe-mcp/
 │   │   ├── matrix.py            矩阵精确求解与化学计量矩阵分析
 │   │   ├── report.py            结果整理：产线、物品流、合计、影子价格
 │   │   └── api.py               plan / machine_stats / production_matrix 入口
-│   ├── server.py                MCP 工具注册（create_server）与 recipe-mcp 入口
-│   ├── client.py                一次性 stdio 客户端（recipe-mcp-client）
+│   ├── server.py                MCP 工具注册（create_server）与 recipe-mcp-server 入口
+│   ├── cli.py                   命令行入口（recipe-mcp-cli）
 │   └── export/                  数据导出：prototypes.py（recipe-mcp-export）、save.py（recipe-mcp-export-save）
 ├── scripts/                     一次性分析与报告，不属于 MCP 本体，通过 `import recipe_mcp` 复用
 │   ├── analysis/                methanol.py、science_fluids.py、pressure_transition.py

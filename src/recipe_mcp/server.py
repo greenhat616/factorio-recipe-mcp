@@ -151,7 +151,7 @@ def create_server(db: Database) -> FastMCP:
 
 
 def main(argv: list[str] | None = None) -> None:
-    ap = argparse.ArgumentParser(prog='recipe-mcp', description=__doc__)
+    ap = argparse.ArgumentParser(prog='recipe-mcp-server', description=__doc__)
     ap.add_argument('--stdio', action='store_true', help='Compatibility flag; stdio is the only transport')
     ap.add_argument('--force', help='Default force for stage-aware queries')
     args = ap.parse_args(argv)

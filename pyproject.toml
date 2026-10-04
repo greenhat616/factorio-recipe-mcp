@@ -11,8 +11,10 @@ dependencies = [
 ]
 
 [project.scripts]
-recipe-mcp = "recipe_mcp.server:main"
-recipe-mcp-client = "recipe_mcp.client:main"
+# The two entry points: an MCP stdio server for MCP clients, and a CLI that calls one tool and exits.
+recipe-mcp-server = "recipe_mcp.server:main"
+recipe-mcp-cli = "recipe_mcp.cli:main"
+# Data exporters that refresh data/ for both.
 recipe-mcp-export = "recipe_mcp.export.prototypes:main"
 recipe-mcp-export-save = "recipe_mcp.export.save:main"
 

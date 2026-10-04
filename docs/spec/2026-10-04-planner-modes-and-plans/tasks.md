@@ -103,7 +103,7 @@
 
 | # | 任务 | 文件 | 完成标准 |
 |---|---|---|---|
-| 7.1 | 工具 `plan_list`、`plan_get`、`plan_save`、`plan_edit`、`plan_solve`、`plan_delete`；`create_server` 以 `paths.PLANS_DIR` 初始化 `PlanStore` | `server.py` | `recipe-mcp-client` 列出 20 个工具 |
+| 7.1 | 工具 `plan_list`、`plan_get`、`plan_save`、`plan_edit`、`plan_solve`、`plan_delete`；`create_server` 以 `paths.PLANS_DIR` 初始化 `PlanStore` | `server.py` | `recipe-mcp-cli` 列出 20 个工具 |
 | 7.2 | `tests/test_mcp_stdio.py`：工具数 20；每个新工具调用一次；非法名称、修订冲突返回 isError；测试方案用唯一前缀并在结束时删除 | `tests/test_mcp_stdio.py` | 通过；运行后 `data/plans/` 下不残留测试方案（回收站中的测试文件一并清理） |
 | 7.3 | README：计算模式、方案管理、示例命令、假设与限制 | `README.md` | 示例命令逐条实际运行成功 |
 | 7.4 | 性能检查：1000 条候选的最大化 + 弹性诊断 < 2 s；10 块方案 < 5 s | 临时脚本（不提交） | 结果记录到最终说明 |

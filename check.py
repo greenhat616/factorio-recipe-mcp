@@ -36,13 +36,15 @@ def check_gate_semantics():
 
 async def main():
     check_gate_semantics()
+    import check_planner
+    check_planner.synthetic()
     db=Database()
     params=StdioServerParameters(command=sys.executable,args=[str(ROOT/'server.py')])
     async with stdio_client(params) as (read,write):
         async with ClientSession(read,write) as session:
             await session.initialize()
             listing=await session.list_tools()
-            assert len(listing.tools)==11
+            assert len(listing.tools)==14
             async def call(name,args,error=False):
                 result=await session.call_tool(name,args)
                 assert bool(result.isError)==error, result
@@ -78,9 +80,19 @@ async def main():
             await call('net_balance',{'recipe_rates':{'nullius-methanol':-1},'validate_stage':False},error=True)
             equipment=(await call('validate_plan',{'recipe_rates':{'nullius-methanol':1},'machines':['nullius-chemical-plant-3'],'force':force}))[0]
             assert not equipment['valid_at_stage']
+            lp=(await call('solve_production',{'targets':{'nullius-methanol':600},'per':'minute','force':force}))[0]
+            assert lp['max_balance_error']<1e-6 and lp['solver']=='lp' and lp['lines']
+            mx=(await call('solve_production',{'targets':{'nullius-methanol':600},'per':'minute','force':force,'solver':'matrix',
+                                               'lines':lp['lines_for_matrix'],**lp['matrix_args']}))[0]
+            assert abs(mx['totals']['machines']-lp['totals']['machines'])<1e-6
+            await call('solve_production',{'targets':{'nullius-methanol':1},'solver':'matrix','force':force},error=True)
+            stats=(await call('machine_stats',{'recipe':'nullius-methanol','rate':10,'force':force}))[0]
+            assert stats['valid_at_stage'] and stats['for_rate']['machines']>0
+            pm=(await call('production_matrix',{'lines':[l['recipe'] for l in lp['lines_for_matrix']],'targets':{'nullius-methanol':10}}))[0]
+            assert pm['square_system']['items']==len(pm['items'])
     cases=json.loads((ROOT/'data/methanol-current-stage.json').read_text())
     for c in cases:
         assert c['stage_validation']['valid_at_stage'] and c['max_balance_error']<1e-6
-    print('PASS: all 11 stdio MCP tools, pagination, force selection, locked-recipe/machine rejection, explicit theory mode, current-stage balances')
+    print('PASS: all 14 stdio MCP tools, pagination, force selection, locked-recipe/machine rejection, explicit theory mode, current-stage balances')
 
 if __name__=='__main__': asyncio.run(main())

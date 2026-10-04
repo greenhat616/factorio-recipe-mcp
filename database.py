@@ -116,7 +116,7 @@ class Database:
                 'scope':'manufacturing research gate only; existing inventory not inspected'}
 
     def machine_stage(self, name, force=None):
-        m = next((self.raw[k][name] for k in ['assembling-machine','furnace','rocket-silo'] if name in self.raw.get(k,{})),None)
+        m = next((self.raw[k][name] for k in ['assembling-machine','furnace','rocket-silo','mining-drill','beacon'] if name in self.raw.get(k,{})),None)
         if m is None: return {'machine':name,'buildable_at_stage':None,'reason':'No supported machine prototype'}
         place = m.get('placeable_by',{})
         item = place.get('item') if isinstance(place,dict) else None

@@ -1,6 +1,7 @@
 import argparse
 from mcp.server.fastmcp import FastMCP
 from database import Database
+from planner import plan, machine_stats as planner_machine_stats, production_matrix as planner_matrix
 
 ap = argparse.ArgumentParser()
 ap.add_argument('--stdio', action='store_true', help='Compatibility flag; stdio is the only transport')
@@ -99,6 +100,49 @@ def net_balance(recipe_rates: dict[str, float], force: str = '', validate_stage:
         validation = db.validate_plan(recipe_rates,force)
         if not validation['valid_at_stage']: raise ValueError('Stage-locked recipes: '+', '.join(validation['blocked_recipes']))
     return db.balance(recipe_rates)
+
+@mcp.tool()
+def solve_production(targets: dict[str, float], lines: list[dict] = [], solver: str = 'lp', per: str = 'second',
+                     defaults: dict = {}, auto_discover: bool | None = None, imports: list[str] = [], forbid_imports: list[str] = [],
+                     import_costs: dict[str, float] = {}, allow_surplus: bool = True, surplus_items: list[str] = [],
+                     objective: str = 'balanced', weights: dict[str, float] = {}, exclude_recipes: list[str] = [],
+                     max_depth: int = 12, max_lines: int = 1000, include_hidden: bool = False, allow_mining: bool = True,
+                     mining_productivity: float = 0.0, research_productivity: bool = True,
+                     force: str = '', validate_stage: bool = True) -> dict:
+    """Helmod/Factory Planner style rate calculator: machine counts, modules/beacons, power, imports, byproducts.
+
+    targets: {material: rate per `per`}; material is an ID or item:/fluid: prefixed ID.
+    lines: [{recipe, id?, machine?, modules? (list or {name:count}), beacons? [{beacon,count,modules,per_machine?}],
+            fixed_machines?, max_machines?, cost_weight?}]. recipe may be "mining:<resource>".
+    solver='lp' (default): HiGHS LP picks among alternatives, auto-discovers upstream recipes when lines is empty,
+            imports only raw items (no producing line) or `imports`, penalises surplus, minimises objective
+            balanced (default: machines + 0.01/unit import + 0.1/unit surplus) | machines | power | imports;
+            weights override {machines,power_MW,imports,surplus}; import_costs scales per item; returns shadow_prices.
+    solver='matrix': exact square-system solve over the given lines (one recipe per intermediate); reports
+            underdetermined null space or inconsistent items; negative unknowns are warned, not hidden.
+    defaults: {machine_preference: fastest|efficient|slowest, machines: [preferred names], modules: [priority list,
+            first compatible fills all slots], beacons: [...]}. Stage-locked recipes/machines/modules are rejected
+            unless validate_stage=false. Feed result.lines_for_matrix back as `lines` to pin a plan."""
+    return plan(db, targets, lines, solver, per, defaults, auto_discover, imports, forbid_imports, import_costs, allow_surplus,
+                surplus_items, objective, weights, exclude_recipes, max_depth, max_lines, include_hidden, allow_mining,
+                mining_productivity, research_productivity, force, validate_stage)
+
+@mcp.tool()
+def machine_stats(recipe: str, machine: str = '', modules: list[str] | None = None, beacons: list[dict] = [],
+                  defaults: dict = {}, rate: float | None = None, item: str = '', per: str = 'second',
+                  mining_productivity: float = 0.0, research_productivity: bool = True,
+                  force: str = '', validate_stage: bool = True) -> dict:
+    """One recipe in one machine: effective speed/productivity/consumption, I/O per machine, power, pollution.
+    With rate (and optional item, default main output) returns machines needed. recipe may be "mining:<resource>"."""
+    return planner_machine_stats(db, recipe, machine, modules, beacons, defaults, rate, item, per, force, validate_stage,
+                                 mining_productivity, research_productivity)
+
+@mcp.tool()
+def production_matrix(lines: list, targets: dict[str, float] = {}, imports: list[str] = [], surplus_items: list[str] = [],
+                      defaults: dict = {}, force: str = '', validate_stage: bool = False) -> dict:
+    """Stoichiometric matrix (items x lines, net per craft incl. productivity), ranks, item roles
+    (target/raw/byproduct/intermediate) and degrees of freedom of the matrix solver's square system."""
+    return planner_matrix(db, lines, targets, imports, surplus_items, defaults, force, validate_stage)
 
 if __name__ == '__main__':
     mcp.run(transport='stdio')

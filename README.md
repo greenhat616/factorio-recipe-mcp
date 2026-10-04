@@ -76,10 +76,33 @@ uv run --directory recipe-mcp export_save.py --save 'C:/Users/a6320/AppData/Roam
 | compatible_machines | 类别兼容的机器、速度、耗电、槽位、流体接口和制造解锁状态 |
 | validate_plan | 批量验证配方，以及可选machines/modules的制造权限 |
 | net_balance | 默认拒绝锁定配方；显式validate_stage=false允许理论配比 |
+| solve_production | Helmod/Factory Planner式量化计算：LP优化或矩阵精确解，输出机器数、插件/信标效果、电力、污染、导入、副产物、影子价格 |
+| machine_stats | 单配方单机器计算器：有效速度/产能/耗电倍率、每台进出料、按目标速率求机器数 |
+| production_matrix | 配方化学计量矩阵（物品×产线）、秩、物品角色与矩阵求解自由度诊断 |
 
 搜索目前使用游戏内部英文ID，返回原始本地化键。状态过滤和默认阶段计算需要明确队伍。`net_balance`只算基础期望配比，不应用插件或队伍额外产能，也不证明不同温度流体可互换；实际配方产能加成会随get_recipe返回。
 
 机器/插件检查通过对应物品的制造配方做科技验证，排除装拆箱和循环自返配方；映射不足时返回unknown，不假定可用。已经拥有的机器和库存没有扫描，因此尚不能制造但库存中已有的设备需要另行指定使用边界。
+
+## 量化计算（planner.py）
+
+产线模型：`{recipe, machine?, modules?, beacons?:[{beacon,count,modules,per_machine?}], fixed_machines?, max_machines?, cost_weight?}`，`recipe` 可写 `mining:<resource>` 表示采矿。效果按2.0原型文档计算：插件效果 + 信标（`distribution_effectivity × profile[信标数]`，`beacon_counter` 区分total/same_type）+ 机器 `effect_receiver.base_effect` + 存档中队伍的配方产能加成；速度/耗电/污染倍率下限20%，产能限制在 `[0, maximum_productivity]`，配方不允许产能时为0；插件的有益效果若不被机器/信标 `allowed_effects` 或配方 `allow_*` 允许则报错。电力机器未写drain时按 `energy_usage/30`（[CraftingMachinePrototype](https://lua-api.factorio.com/2.0.77/prototypes/CraftingMachinePrototype.html#energy_usage)）。
+
+两种求解器：
+
+- **lp**（默认）：HiGHS线性规划。`lines` 为空时从目标向上游自动发现当前阶段可用配方（排除装箱/桶装、虚拟、回收、发电、销毁、隐藏配方，最多 `max_lines` 条），在替代配方之间优化。仅无生产线的原料（或 `imports` 列出的）可导入；默认允许任意物品溢出但计罚。目标 `balanced`（机器数 + 0.01/单位导入 + 0.1/单位溢出）、`machines`、`power`、`imports`，`weights`/`import_costs` 可覆盖。返回 `shadow_prices`（每多产1单位/时间的目标函数边际成本）、`lines_for_matrix` 和 `matrix_args`。
+- **matrix**：Factory Planner式方阵求解，必须给定lines（每个中间品一条配方）。物品角色自动判定：只消耗→导入未知量，只产出且非目标→副产物未知量，中间品平衡为0；`surplus_items`/`imports` 额外放开。欠定时返回零空间方向，矛盾时返回不能平衡的物品，负解给出警告而不隐藏。
+
+推荐流程：先 lp 自动选路线，再把 `lines_for_matrix` + `matrix_args` 交给 matrix 固定方案，然后逐条改机器/插件/信标复算。`per` 支持second/minute/hour。
+
+未建模：品质、表面效果、传送带/管道吞吐、流体矿产出衰减（按100%产量）、采矿机drain（未写时视为0）、热能/燃料机器的燃料链（单独报告为 `*_fuel_MW`）。流体温度只做告警检查。
+
+```powershell
+uv run --directory recipe-mcp client.py solve_production '{"targets":{"nullius-methanol":600},"per":"minute","force":"faction-a632079"}'
+uv run --directory recipe-mcp client.py machine_stats '{"recipe":"nullius-methanol","rate":10,"force":"faction-a632079"}'
+uv run --directory recipe-mcp client.py solve_production '{"targets":{"nullius-methanol":10},"objective":"power","defaults":{"modules":["nullius-yield-module-2","nullius-speed-module-2"]},"force":"faction-a632079"}'
+uv run --directory recipe-mcp check_planner.py
+```
 
 ## 调用示例
 

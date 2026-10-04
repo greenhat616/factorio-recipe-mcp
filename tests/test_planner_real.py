@@ -49,3 +49,18 @@ def test_stage_locked_machine_rejected(real_db: Database, force: str) -> None:
 def test_machine_stats_for_rate(real_db: Database, force: str) -> None:
     st = machine_stats(real_db, 'nullius-methanol', rate=10, force=force)
     assert st.valid_at_stage and st.for_rate is not None and st.for_rate.machines > 0
+
+
+def test_maximize_methanol_under_limestone_limit(real_db: Database, force: str, methanol: PlanResult) -> None:
+    # On the auto-discovered candidate set other raw routes stay uncapped, so pin the chosen route.
+    r = plan(
+        real_db,
+        {'nullius-methanol': 1},
+        methanol.lines_for_matrix,
+        mode='maximize',
+        limits={'imports': {'nullius-box-limestone': 2}},
+        force=force,
+    )
+    assert r.scale is not None and r.scale > 0
+    assert 'import:item:nullius-box-limestone' in {b.constraint for b in r.bottlenecks}
+    assert r.imports['item:nullius-box-limestone'] <= 2 + 1e-6

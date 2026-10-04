@@ -2,10 +2,12 @@
 
 import math
 from collections.abc import Iterable, Mapping, Sequence
+from typing import Any
 
 import numpy as np
 
 from ..database import Database
+from .limits import limit_rows, usage_report
 from .lp import solve_lp
 from .matrix import analyze_matrix, recipe_matrix, solve_matrix
 from .model import OBJECTIVES, TIME, Planner
@@ -13,10 +15,12 @@ from .report import report
 from .schema import (
     BeaconSpec,
     Defaults,
+    Limits,
     LineSpec,
     MachinePower,
     MachineStats,
     MatrixArgs,
+    Mode,
     ModuleSpec,
     Objective,
     Per,
@@ -54,16 +58,24 @@ def plan(
     research_productivity: bool = True,
     force: str = '',
     validate_stage: bool = True,
+    mode: Mode = 'targets',
+    limits: Limits | Mapping[str, Any] | None = None,
 ) -> PlanResult:
     factor = TIME[per]
+    lim = limits if isinstance(limits, Limits) else Limits.model_validate(limits or {})
     p = Planner(db, force, validate_stage, research_productivity, mining_productivity)
     tgt: dict[str, float] = {}
     for name, rate in targets.items():
+        if mode == 'maximize' and (not math.isfinite(rate) or rate <= 0):
+            raise ValueError(f'mode=maximize reads targets as ratios, which must be positive; got {name}={rate}')
         if not math.isfinite(rate) or rate < 0:
             raise ValueError('Target rates must be finite and nonnegative')
         tgt[p.key(name)] = rate / factor
     if not tgt:
         raise ValueError('At least one target is required')
+    constrained = lim != Limits()
+    if solver == 'matrix' and (mode == 'maximize' or constrained):
+        raise ValueError('mode=maximize and limits need the lp solver; use solver="lp"')
     import_keys = {p.key(n) for n in imports}
     forbid = {p.key(n) for n in forbid_imports}
     surplus = {p.key(n) for n in surplus_items}
@@ -90,10 +102,14 @@ def plan(
         raise ValueError('No usable production lines for the targets')
     if solver == 'lp':
         w = Weights.model_validate({**OBJECTIVES[objective].model_dump(), **(weights or {})})
-        sol = solve_lp(rows, tgt, import_keys, forbid, costs, allow_surplus, surplus, w)
+        limit_list = limit_rows(p, rows, lim, factor)
+        sol = solve_lp(rows, tgt, import_keys, forbid, costs, allow_surplus, surplus, w, mode, limit_list)
     else:
         sol = solve_matrix(rows, tgt, import_keys, surplus, p.warnings)
-    out = report(p, rows, sol, tgt, factor)
+    achieved = {k: v * sol.scale for k, v in tgt.items()} if sol.scale is not None else tgt
+    out = report(p, rows, sol, achieved, factor)
+    out.warnings += sol.warnings
+    usage, bottlenecks = usage_report(sol.constraints, mode, factor, per)
     if frontier:
         out.warnings.append(f'max_depth reached; treated as imports where needed: {frontier[:20]}')
     if truncated:
@@ -111,10 +127,15 @@ def plan(
     return PlanResult(
         **dict(out),
         solver=solver,
+        mode=mode,
         per=per,
         force=p.force,
         validate_stage=validate_stage,
         targets={k: v * factor for k, v in tgt.items()},
+        scale=sol.scale,
+        achieved_targets={k: v * factor for k, v in achieved.items()},
+        limits_usage=usage,
+        bottlenecks=bottlenecks,
         candidate_lines=len(rows),
         excluded_candidates=excluded[:50],
         lines_for_matrix=[r.pin() for r in rows if r.id in chosen],

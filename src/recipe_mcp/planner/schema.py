@@ -11,6 +11,7 @@ ModuleSpec = list[str] | dict[str, int]
 Per = Literal['second', 'minute', 'hour']
 SolverName = Literal['lp', 'matrix']
 Objective = Literal['balanced', 'machines', 'power', 'imports']
+Mode = Literal['targets', 'maximize']
 
 
 class BeaconSpec(Spec):
@@ -39,6 +40,36 @@ class Defaults(Spec):
     machines: list[str] = Field([], description='Preferred machine names, first compatible wins')
     modules: list[str] = Field([], description='Priority list; the first compatible module fills all slots')
     beacons: list[BeaconSpec] = []
+
+
+class Limits(Spec):
+    imports: dict[str, float] = Field({}, description='Import cap per item, in units per `per`')
+    power_MW: float | None = Field(None, ge=0, description='Average electric power incl. drain and beacons')
+    machines: float | None = Field(None, ge=0, description='Fractional production machines, excl. beacons and disposal')
+    machines_by_type: dict[str, float] = Field({}, description='Fractional machine count cap per machine name')
+    pollution_per_minute: float | None = Field(None, ge=0)
+
+
+class LimitRow(BaseModel):
+    """One limit in internal per-second units: a row over line crafts, or a cap on one item's import."""
+
+    name: str
+    limit: float
+    coef: list[float] = Field([], description='Usage per craft/s of each line; empty for an import cap')
+    item: str | None = Field(None, description='Item whose import this caps')
+    rate: bool = Field(False, description='Limit and usage are rates that scale with `per`')
+    unit: str
+
+
+class ConstraintState(BaseModel):
+    """A limit at the solution, internal units; marginal is the objective gain per unit of relaxation."""
+
+    name: str
+    limit: float
+    used: float
+    marginal: float | None
+    rate: bool
+    unit: str
 
 
 class Weights(BaseModel):
@@ -193,6 +224,9 @@ class Solution(BaseModel):
     status: str | None = None
     matrix: MatrixInfo | None = None
     negative: list[str] = []
+    scale: float | None = None
+    constraints: list[ConstraintState] = []
+    warnings: list[str] = []
 
 
 class PlanLine(BaseModel):
@@ -249,6 +283,22 @@ class Report(BaseModel):
     matrix: MatrixInfo | None = None
 
 
+class LimitUsage(BaseModel):
+    constraint: str
+    limit: float
+    used: float
+    utilization: float | None = Field(description='used / limit; null when the limit is 0')
+    unit: str
+
+
+class Bottleneck(BaseModel):
+    constraint: str
+    limit: float
+    used: float
+    marginal: float
+    meaning: str
+
+
 class ExcludedCandidate(BaseModel):
     recipe: str
     reason: str
@@ -272,10 +322,18 @@ PlanStatus = Literal['optimal', 'infeasible', 'time_limit']
 class PlanResult(Report):
     status: PlanStatus = 'optimal'
     solver: SolverName
+    mode: Mode = 'targets'
     per: Per
     force: str | None
     validate_stage: bool
-    targets: dict[str, float]
+    targets: dict[str, float] = Field(description='Requested rates; ratios when mode=maximize')
+    scale: float | None = Field(None, description='mode=maximize: achieved rate = scale x ratio, per `per`')
+    achieved_targets: dict[str, float] = Field({}, description='Target rates actually produced, per `per`')
+    limits_usage: list[LimitUsage] = []
+    bottlenecks: list[Bottleneck] = Field(
+        [], description='Binding limits; marginal = scale (maximize) or objective (targets) gain per +1 limit unit'
+    )
+    bottlenecks_note: str | None = None
     candidate_lines: int
     excluded_candidates: list[ExcludedCandidate]
     lines_for_matrix: list[LineSpec] = Field(description='Pass back as `lines` to pin this plan')

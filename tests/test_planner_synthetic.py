@@ -268,3 +268,89 @@ def test_lp_builder_maps_names_both_ways() -> None:
 
 def test_plan_reports_optimal_status(db: Database) -> None:
     assert plan(db, {'petro': 100}, OIL, validate_stage=False).status == 'optimal'
+
+
+def test_maximize_under_import_limit(db: Database) -> None:
+    r = plan(db, {'petro': 1}, OIL, mode='maximize', limits={'imports': {'crude': 100}}, validate_stage=False)
+    assert r.scale == approx(97.5, 1e-7) and r.achieved_targets['fluid:petro'] == approx(97.5, 1e-7)
+    assert r.imports['fluid:crude'] == approx(100, 1e-7)
+    (b,) = r.bottlenecks
+    assert b.constraint == 'import:fluid:crude' and b.marginal == approx(0.975, 1e-7)
+    assert r.limits_usage[0].utilization == approx(1, 1e-7)
+
+
+def test_maximize_marginal_is_unit_consistent_per_minute(db: Database) -> None:
+    r = plan(
+        db, {'petro': 1}, OIL, per='minute', mode='maximize', limits={'imports': {'crude': 6000}}, validate_stage=False
+    )
+    assert r.scale == approx(5850, 1e-7) and r.bottlenecks[0].marginal == approx(0.975, 1e-7)
+
+
+def test_maximize_keeps_ratios(db: Database) -> None:
+    r = plan(
+        db, {'petro': 1, 'light': 2}, OIL, mode='maximize', limits={'imports': {'crude': 100}}, validate_stage=False
+    )
+    out = r.achieved_targets
+    assert out['fluid:light'] / out['fluid:petro'] == approx(2, 1e-6)
+    flows = {i.item: i for i in r.items}
+    assert flows['fluid:light'].target == approx(out['fluid:light'])
+
+
+def test_maximize_under_power_limit_skips_heavy_cracking(db: Database) -> None:
+    # Per MW, heavy cracking yields less petroleum than more distillation; light cracking yields more.
+    # Distillation + light cracking: 85 petro per 5 x 0.42 + 1.5 x 2 x 0.217 = 2.751 MW.
+    r = plan(db, {'petro': 1}, OIL, mode='maximize', limits={'power_MW': 10}, validate_stage=False)
+    assert r.scale == approx(10 * 85 / 2.751, 1e-7)
+    assert r.totals.power_MW <= 10 + 1e-6
+    assert [b.constraint for b in r.bottlenecks] == ['power_MW']
+
+
+def test_machine_type_limit(db: Database) -> None:
+    r = plan(
+        db,
+        {'petro': 1},
+        OIL,
+        mode='maximize',
+        limits={'machines_by_type': {'refinery': 5}},
+        validate_stage=False,
+    )
+    assert r.scale == approx(97.5, 1e-7)
+    with pytest.raises(ValueError, match='Unknown machine'):
+        plan(db, {'petro': 1}, OIL, mode='maximize', limits={'machines_by_type': {'nope': 1}}, validate_stage=False)
+
+
+def test_total_machine_limit(db: Database) -> None:
+    # Full cracking needs 5 + 2 x 0.625 + 2 x 2.125 = 10.5 machines per crude craft/s.
+    r = plan(db, {'petro': 1}, OIL, mode='maximize', limits={'machines': 21}, validate_stage=False)
+    assert r.totals.machines == approx(21, 1e-7) and r.bottlenecks[0].constraint == 'machines'
+
+
+def test_maximize_rejects_bad_input(db: Database) -> None:
+    with pytest.raises(ValueError, match='unbounded'):
+        plan(db, {'petro': 1}, OIL, mode='maximize', validate_stage=False)
+    with pytest.raises(ValueError, match='ratios'):
+        plan(db, {'petro': 0}, OIL, mode='maximize', limits={'power_MW': 1}, validate_stage=False)
+    with pytest.raises(ValueError, match='lp solver'):
+        plan(db, {'petro': 1}, OIL, solver='matrix', mode='maximize', validate_stage=False)
+    with pytest.raises(ValueError, match='power_mw'):
+        plan(db, {'petro': 1}, OIL, mode='maximize', limits={'power_mw': 1}, validate_stage=False)
+    with pytest.raises(ValueError, match='is a target'):
+        plan(db, {'petro': 1}, OIL, limits={'imports': {'petro': 1}}, validate_stage=False)
+
+
+def test_slack_limit_leaves_targets_solution_unchanged(db: Database) -> None:
+    free = plan(db, {'petro': 100}, OIL, validate_stage=False)
+    capped = plan(db, {'petro': 100}, OIL, limits={'power_MW': 1000, 'machines': 1000}, validate_stage=False)
+    assert capped.totals.machines == approx(free.totals.machines)
+    assert all(u.utilization is not None and u.utilization < 1 for u in capped.limits_usage)
+    assert capped.bottlenecks == []
+
+
+def test_tight_limit_in_targets_mode_reports_marginal_cost(db: Database) -> None:
+    # gear-b uses fewer plates but more machines; capping plates forces it and frees objective per plate.
+    free = plan(db, {'gear': 1}, ['gear-a', 'gear-b'], validate_stage=False)
+    assert [line.recipe for line in free.lines] == ['gear-a']
+    r = plan(db, {'gear': 1}, ['gear-a', 'gear-b'], limits={'imports': {'plate': 1.5}}, validate_stage=False)
+    (b,) = r.bottlenecks
+    # One more plate moves one gear from gear-b (4 machines + 0.01) to gear-a (1 machine + 0.02).
+    assert b.constraint == 'import:item:plate' and b.used == approx(1.5, 1e-7) and b.marginal == approx(2.99, 1e-7)

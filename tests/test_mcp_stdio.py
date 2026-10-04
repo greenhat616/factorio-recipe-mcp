@@ -104,6 +104,20 @@ async def run(db: Database, force: str) -> None:
             await call(
                 'solve_production', {'targets': {'nullius-methanol': 1}, 'solver': 'matrix', 'force': force}, error=True
             )
+            mx_scale = (
+                await call(
+                    'solve_production',
+                    {
+                        'targets': {'nullius-methanol': 1},
+                        'lines': lp['lines_for_matrix'],
+                        'mode': 'maximize',
+                        'limits': {'imports': {'nullius-box-limestone': 120}},
+                        'per': 'minute',
+                        'force': force,
+                    },
+                )
+            )[0]
+            assert mx_scale['scale'] > 0 and mx_scale['bottlenecks']
             stats = (await call('machine_stats', {'recipe': 'nullius-methanol', 'rate': 10, 'force': force}))[0]
             assert stats['valid_at_stage'] and stats['for_rate']['machines'] > 0
             pm = (

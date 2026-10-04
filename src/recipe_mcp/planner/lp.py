@@ -8,7 +8,7 @@ from numpy.typing import NDArray
 from scipy.optimize import linprog
 from scipy.sparse import csr_matrix
 
-from .schema import Line, Solution, Weights
+from .schema import ConstraintState, LimitRow, Line, Mode, Solution, Weights
 
 Coeffs = Mapping[int, float]
 
@@ -98,11 +98,23 @@ def solve_lp(
     allow_surplus: bool,
     surplus_items: set[str],
     weights: Weights,
+    mode: Mode = 'targets',
+    limits: Sequence[LimitRow] = (),
 ) -> Solution:
+    """mode='targets' meets targets at minimum cost; mode='maximize' reads targets as ratios and first
+    maximises the scale s (output = s x ratio), then minimises cost with s held at its maximum."""
+    maximize = mode == 'maximize'
+    caps = {r.item: r for r in limits if r.item is not None}
+    rows_limits = [r for r in limits if r.item is None]
+    for k in caps:
+        if k in targets:
+            raise ValueError(f'limits.imports caps {k}, which is a target; targets are never imported')
     keys = sorted({k for r in lines for k in r.balance} | set(targets))
     produced = {k for r in lines for k, v in r.balance.items() if v > 0}
     importable = [
-        k for k in keys if (k not in produced or k in imports) and k not in forbid_imports and k not in targets
+        k
+        for k in keys
+        if (k not in produced or k in imports or k in caps) and k not in forbid_imports and k not in targets
     ]
     surplus_keys = keys if allow_surplus else [k for k in keys if k in surplus_items or k in targets]
     lp = LPBuilder()
@@ -119,29 +131,77 @@ def solve_lp(
         for k, v in r.balance.items():
             rows[k][c] = v
     for k in importable:
-        rows[k][lp.col(f'm:{k}', weights.imports * import_costs.get(k, 1.0))] = 1
+        cap = caps[k].limit if k in caps else None
+        rows[k][lp.col(f'm:{k}', weights.imports * import_costs.get(k, 1.0), ub=cap)] = 1
     for k in surplus_keys:
         rows[k][lp.col(f'u:{k}', weights.surplus)] = -1
+    s_col = lp.col('s') if maximize else -1
     for k in keys:
-        lp.add_eq(k, rows[k], targets.get(k, 0.0))
-    res = lp.solve()
-    if not res.success:
-        missing = sorted(k for k in targets if k not in produced and k not in importable)
-        hint = (
-            f'; no producing line for {missing}'
-            if missing
-            else '; check forbid_imports, fixed_machines/max_machines or allow_surplus'
-        )
-        raise ValueError(f'LP infeasible: {res.message}{hint}')
+        if maximize and k in targets:
+            rows[k][s_col] = -targets[k]
+        lp.add_eq(k, rows[k], 0.0 if maximize else targets.get(k, 0.0))
+    for row in rows_limits:
+        lp.add_ub(row.name, {j: v for j, v in enumerate(row.coef) if v}, row.limit)
+    warnings: list[str] = []
+    if maximize:
+        res_scale = lp.solve([-1.0 if j == s_col else 0.0 for j in range(len(lp.cols))])
+        if res_scale.status == 3:
+            raise ValueError(
+                'Maximize is unbounded: nothing limits the scale. Add limits.imports, power_MW, machines, '
+                'machines_by_type or pollution_per_minute, or fix a line with fixed_machines/max_machines.'
+            )
+        if not res_scale.success:
+            raise ValueError(f'LP infeasible: {res_scale.message}; check fixed_machines/max_machines or allow_surplus')
+        s_max = float(res_scale.x[s_col])
+        lp.add_ub('scale_floor', {s_col: -1.0}, -s_max * (1 - 1e-9))
+        res = lp.solve()
+        if not res.success:
+            warnings.append(
+                f'Cost minimisation at the maximum scale failed ({res.message}); returning the scale-only solution'
+            )
+            res = res_scale
+        duals = res_scale
+    else:
+        res = lp.solve()
+        if not res.success:
+            missing = sorted(k for k in targets if k not in produced and k not in importable)
+            hint = (
+                f'; no producing line for {missing}'
+                if missing
+                else '; check limits, forbid_imports, fixed_machines/max_machines or allow_surplus'
+            )
+            raise ValueError(f'LP infeasible: {res.message}{hint}')
+        duals = res
     x = res.x
     L = len(lines)
+    states: list[ConstraintState] = []
+    ineq = duals.ineqlin.marginals if lp.ub_names else []
+    for i, row in enumerate(rows_limits):
+        used = sum(v * x[j] for j, v in enumerate(row.coef))
+        states.append(
+            ConstraintState(
+                name=row.name, limit=row.limit, used=used, marginal=-float(ineq[i]), rate=row.rate, unit=row.unit
+            )
+        )
+    for k, cap_row in caps.items():
+        col = lp.index.get(f'm:{k}')
+        used = float(x[col]) if col is not None else 0.0
+        marginal = -float(duals.upper.marginals[col]) if col is not None else 0.0
+        states.append(
+            ConstraintState(
+                name=cap_row.name, limit=cap_row.limit, used=used, marginal=marginal, rate=True, unit=cap_row.unit
+            )
+        )
     prices = dict(zip(keys, res.eqlin.marginals, strict=True)) if getattr(res, 'eqlin', None) is not None else {}
     return Solution(
         x=x[:L].tolist(),
         imports={k: float(x[lp.index[f'm:{k}']]) for k in importable},
         surplus={k: float(x[lp.index[f'u:{k}']]) for k in surplus_keys},
         residual=lp.eq_residual(x),
-        objective=float(res.fun),
+        objective=float(np.array(lp.cost) @ x),
         prices={k: float(v) for k, v in prices.items()},
         status=res.message,
+        scale=float(x[s_col]) if maximize else None,
+        constraints=states,
+        warnings=warnings,
     )

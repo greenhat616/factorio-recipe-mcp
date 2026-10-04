@@ -23,8 +23,10 @@ from .planner import production_matrix as planner_matrix
 from .planner.schema import (
     BeaconSpec,
     Defaults,
+    Limits,
     LineSpec,
     MachineStats,
+    Mode,
     ModuleSpec,
     Objective,
     Per,
@@ -197,6 +199,8 @@ def create_server(db: Database) -> FastMCP:
         research_productivity: bool = True,
         force: str = '',
         validate_stage: bool = True,
+        mode: Mode = 'targets',
+        limits: Limits | None = None,
     ) -> PlanResult:
         """Helmod/Factory Planner style rate calculator: machine counts, modules/beacons, power, imports, byproducts.
 
@@ -208,32 +212,39 @@ def create_server(db: Database) -> FastMCP:
                 weights override single objective weights; import_costs scales per item; returns shadow_prices.
         solver='matrix': exact square-system solve over the given lines (one recipe per intermediate); reports
                 underdetermined null space or inconsistent items; negative unknowns are warned, not hidden.
+        mode='maximize' (lp only): targets are ratios; returns the largest `scale` (output = scale x ratio per `per`)
+                that fits `limits`, then the cheapest plan at that scale.
+        limits (lp only): {imports: {item: rate per `per`}, power_MW, machines, machines_by_type: {machine: count},
+                pollution_per_minute}. Capped imports are allowed even when the item has a producing line.
+                Returns limits_usage for every limit and bottlenecks for binding ones with their marginal value.
         Stage-locked recipes/machines/modules are rejected unless validate_stage=false.
         Feed result.lines_for_matrix back as `lines` (with result.matrix_args for the matrix solver) to pin a plan."""
         return plan(
             db,
             targets,
             lines,
-            solver,
-            per,
-            defaults,
-            auto_discover,
-            imports,
-            forbid_imports,
-            import_costs,
-            allow_surplus,
-            surplus_items,
-            objective,
-            weights,
-            exclude_recipes,
-            max_depth,
-            max_lines,
-            include_hidden,
-            allow_mining,
-            mining_productivity,
-            research_productivity,
-            force,
-            validate_stage,
+            solver=solver,
+            per=per,
+            defaults=defaults,
+            auto_discover=auto_discover,
+            imports=imports,
+            forbid_imports=forbid_imports,
+            import_costs=import_costs,
+            allow_surplus=allow_surplus,
+            surplus_items=surplus_items,
+            objective=objective,
+            weights=weights,
+            exclude_recipes=exclude_recipes,
+            max_depth=max_depth,
+            max_lines=max_lines,
+            include_hidden=include_hidden,
+            allow_mining=allow_mining,
+            mining_productivity=mining_productivity,
+            research_productivity=research_productivity,
+            force=force,
+            validate_stage=validate_stage,
+            mode=mode,
+            limits=limits,
         )
 
     @mcp.tool()

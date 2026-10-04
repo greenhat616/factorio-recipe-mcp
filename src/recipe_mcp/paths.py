@@ -4,6 +4,7 @@ The project is installed editable by ``uv sync``, so the project root is two
 levels above this package. ``RECIPE_MCP_HOME`` overrides it (e.g. a different
 data checkout); ``RECIPE_MCP_DATA`` overrides only the data directory.
 """
+
 import os
 from pathlib import Path
 

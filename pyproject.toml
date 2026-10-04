@@ -22,6 +22,7 @@ recipe-mcp-export-save = "recipe_mcp.export.save:main"
 dev = [
     "mypy>=2.4.0",
     "pytest>=8",
+    "ruff>=0.16.10",
 ]
 
 [build-system]
@@ -34,6 +35,29 @@ addopts = "-ra"
 markers = [
     "realdata: needs the exported prototype dump and a compatible save snapshot in data/",
 ]
+
+[tool.ruff]
+line-length = 120
+target-version = "py313"
+
+[tool.ruff.format]
+quote-style = "single"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B"]
+# The formatter owns line length; what it leaves long is prose in strings.
+ignore = ["E501"]
+
+[tool.ruff.lint.per-file-ignores]
+# FastMCP validates tool arguments into fresh objects on every call, so mutable defaults are never shared.
+"src/recipe_mcp/server.py" = ["B006"]
+# Their loop-local helpers are only called within the iteration that defines them.
+"scripts/analysis/science_fluids.py" = ["B023"]
+"scripts/pressure_report/zones.py" = ["B023"]
+
+[tool.ruff.lint.isort]
+# Scripts import their siblings by bare module name; without this ruff files them as third-party.
+known-first-party = ["recipe_mcp", "science_fluids", "zones"]
 
 [tool.mypy]
 python_version = "3.13"

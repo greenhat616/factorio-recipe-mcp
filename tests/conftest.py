@@ -1,4 +1,5 @@
 """Shared fixtures. Real-data tests skip (not fail) when data/ has no compatible export."""
+
 import os
 
 import pytest

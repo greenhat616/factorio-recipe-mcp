@@ -18,6 +18,7 @@ Electric drain defaults to energy_usage/30 for crafting machines. Quality,
 surface effects, fluid-resource yield depletion and belt/pipe throughput are not
 modelled. Rates are expected values (probability and amount ranges averaged).
 """
+
 from .api import machine_stats, plan, production_matrix
 from .model import Planner, drain_watts, product_amount, watts
 

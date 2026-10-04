@@ -1,4 +1,5 @@
 """Functional browser checks for the offline report. Requires Python Playwright + Edge."""
+
 import csv
 import io
 import json
@@ -13,8 +14,11 @@ from recipe_mcp.paths import DATA_DIR, WORKSPACE_ROOT
 def check() -> None:
     source = json.loads((DATA_DIR / 'pressure-transition-all.json').read_text(encoding='utf-8'))
     source = {s['name']: s for s in source}
-    hydrogen = next(f['process_demand_per_second'] for f in source['entry_volcanic']['fluid_bus']
-                    if f['fluid'] == 'nullius-compressed-hydrogen')
+    hydrogen = next(
+        f['process_demand_per_second']
+        for f in source['entry_volcanic']['fluid_bus']
+        if f['fluid'] == 'nullius-compressed-hydrogen'
+    )
     errors = []
     with sync_playwright() as p:
         browser = p.chromium.launch(channel='msedge', headless=True, timeout=15000)
@@ -47,9 +51,11 @@ def check() -> None:
         page.locator('#reset').click()
 
         # All pre-solved variants switch correctly, including future equipment gating.
-        for control, names in [('entryRoute', ['entry_water_electrolysis', 'entry_volcanic']),
-                               ('midRoute', ['mechanical_upgrade', 'science_upgrades', 'industrial_volcanic', 'industrial_capped']),
-                               ('carbonRoute', ['carbon_without_new_recipes', 'carbon_volcanic'])]:
+        for control, names in [
+            ('entryRoute', ['entry_water_electrolysis', 'entry_volcanic']),
+            ('midRoute', ['mechanical_upgrade', 'science_upgrades', 'industrial_volcanic', 'industrial_capped']),
+            ('carbonRoute', ['carbon_without_new_recipes', 'carbon_volcanic']),
+        ]:
             for scenario in names:
                 page.locator('#' + control).select_option(scenario)
                 assert page.locator('#validation').inner_text() == ''
@@ -85,11 +91,11 @@ def check() -> None:
         volcanic = next(r for r in model['lines'] if r['id'] == 'nullius-volcanic-gas')
         q = source['entry_volcanic']['supplies']['fluid:nullius-volcanic-gas']
         payload = 80000 * 4
-        dwell = payload / (4 * 2 * 6000 * .8) + 15
+        dwell = payload / (4 * 2 * 6000 * 0.8) + 15
         assert model['payload'] == payload
         assert math.isclose(volcanic['q'], q)
-        assert volcanic['trains'] == math.ceil(q / payload * 180 / .85)
-        assert volcanic['berths'] == math.ceil(q / payload * dwell / .8)
+        assert volcanic['trains'] == math.ceil(q / payload * 180 / 0.85)
+        assert volcanic['berths'] == math.ceil(q / payload * dwell / 0.8)
         assert math.isclose(volcanic['buffer'], q * 120)
         page.locator('#viewUnit').select_option('equivalent')
         page.locator('#flowUnit').select_option('60')
@@ -107,7 +113,9 @@ def check() -> None:
         share.fill('50')
         share.press('Tab')
         assert page.locator('#railPreset').input_value() == 'custom'
-        assert math.isclose(page.evaluate('railModel(state()).lines.find(r=>r.id==="nullius-compressed-hydrogen").q'), hydrogen / 2)
+        assert math.isclose(
+            page.evaluate('railModel(state()).lines.find(r=>r.id==="nullius-compressed-hydrogen").q'), hydrogen / 2
+        )
         page.locator('#railCars').fill('0')
         assert page.locator('#railError').inner_text()
         page.locator('#railCars').fill('4')
@@ -156,7 +164,9 @@ def check() -> None:
         page.locator('#zoneToRail').click()
         assert page.locator('#railSource').input_value() == 'zone-rail'
         assert page.locator('#railStage').input_value() == '2'
-        assert page.evaluate('railModel(state()).lines.find(r=>r.id==="nullius-compressed-hydrogen").q === DATA.zoning.scenarios.carbon_volcanic.rail.materials.find(m=>m.material==="fluid:nullius-compressed-hydrogen").total_import')
+        assert page.evaluate(
+            'railModel(state()).lines.find(r=>r.id==="nullius-compressed-hydrogen").q === DATA.zoning.scenarios.carbon_volcanic.rail.materials.find(m=>m.material==="fluid:nullius-compressed-hydrogen").total_import'
+        )
         page.locator('#tab-zones').click()
         page.locator('#zoneRecipeFilter').select_option('active')
         page.screenshot(path=str(WORKSPACE_ROOT / 'docs/pressure-dashboard-zones.png'), full_page=True)
@@ -179,7 +189,9 @@ def check() -> None:
         page.screenshot(path=str(WORKSPACE_ROOT / 'docs/pressure-dashboard-mobile.png'), full_page=True)
         assert not errors, errors
         browser.close()
-    print('PASS: scaling, units, pumps, all routes, filters, exports, validation, rail math, 6/9-zone interfaces, recipe/technology views, zero load, and 3 responsive widths; no JS errors.')
+    print(
+        'PASS: scaling, units, pumps, all routes, filters, exports, validation, rail math, 6/9-zone interfaces, recipe/technology views, zero load, and 3 responsive widths; no JS errors.'
+    )
 
 
 if __name__ == '__main__':

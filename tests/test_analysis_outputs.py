@@ -1,4 +1,5 @@
 """Consistency of saved analysis outputs (scripts/analysis/methanol.py --force ...)."""
+
 import json
 
 import pytest

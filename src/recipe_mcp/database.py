@@ -5,7 +5,7 @@ import math
 from collections import defaultdict
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent
+from .paths import PROGRESS, RAW_DUMP
 
 def amount(entry):
     return entry.get('probability', 1) * entry.get('amount', (entry.get('amount_min', 0) + entry.get('amount_max', 0)) / 2)
@@ -13,12 +13,12 @@ def amount(entry):
 class Database:
     def __init__(self, path=None, raw=None, progress=None, default_force=None):
         if raw is None:
-            blob = Path(path or ROOT / 'data/script-output/data-raw-dump.json').read_bytes()
+            blob = Path(path or RAW_DUMP).read_bytes()
             self.raw, self.raw_sha256 = json.loads(blob), hashlib.sha256(blob).hexdigest()
         else:
             self.raw, self.raw_sha256 = raw, None
         self.default_force = default_force
-        snapshot = ROOT/'data/progress.json'
+        snapshot = PROGRESS
         self.progress = progress if progress is not None else (json.loads(snapshot.read_text(encoding='utf-8')) if snapshot.exists() else {})
         provenance = self.progress.get('provenance',{})
         self.progress_compatible = bool(self.raw_sha256 and provenance.get('prototype_raw_sha256')==self.raw_sha256
@@ -53,7 +53,7 @@ class Database:
         return candidates[0] if len(candidates)==1 else None
 
     def require_force(self, force=None):
-        if not self.progress_compatible: raise ValueError('A compatible save progress snapshot is required. Run export_save.py.')
+        if not self.progress_compatible: raise ValueError('A compatible save progress snapshot is required. Run recipe-mcp-export-save.')
         name = self.force_name(force)
         if not name: raise ValueError('Multiple forces: select a force explicitly with force or --force. See get_progress_context.')
         return name

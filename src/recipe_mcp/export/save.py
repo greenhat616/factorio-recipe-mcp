@@ -10,7 +10,7 @@ import shutil
 import subprocess
 import tempfile
 import zipfile
-from database import ROOT
+from ..paths import DATA_DIR, PROGRESS, RAW_DUMP, WORKSPACE_ROOT
 
 def sha(path):
     return hashlib.sha256(Path(path).read_bytes()).hexdigest()
@@ -24,14 +24,14 @@ def signature(recipe, runtime=False):
             entries(recipe.get('ingredients',[])), entries(recipe.get('products' if runtime else 'results',[])))
 
 def main():
-    ap = argparse.ArgumentParser()
+    ap = argparse.ArgumentParser(prog='recipe-mcp-export-save', description=__doc__)
     ap.add_argument('--save', help='Explicit save path; defaults to the newest .zip in Factorio/saves')
     ap.add_argument('--factorio', default=r'D:\Program Files (x86)\Steam\steamapps\common\Factorio\bin\x64\factorio.exe')
     ap.add_argument('--mods', default=str(Path.home()/'AppData/Roaming/Factorio/mods'))
     args = ap.parse_args()
     mods = Path(args.mods)
     source = Path(args.save) if args.save else max((mods.parent/'saves').glob('*.zip'), key=lambda p:p.stat().st_mtime_ns)
-    work = Path(tempfile.mkdtemp(prefix='progress-', dir=ROOT/'data'))
+    work = Path(tempfile.mkdtemp(prefix='progress-', dir=DATA_DIR))
     local_mods = work/'mods'
     local_mods.mkdir()
     listed = json.loads((mods/'mod-list.json').read_text())
@@ -55,8 +55,8 @@ def main():
     listed['mods'].append({'name':helper_name,'enabled':True})
     (local_mods/'mod-list.json').write_text(json.dumps(listed), encoding='utf-8')
     if (mods/'mod-settings.dat').exists(): shutil.copy2(mods/'mod-settings.dat', local_mods/'mod-settings.dat')
-    helper = ROOT.parent/helper_name
-    archive = ROOT.parent/f'{helper_name}_0.1.0.zip'
+    helper = WORKSPACE_ROOT/helper_name
+    archive = WORKSPACE_ROOT/f'{helper_name}_0.1.0.zip'
     with zipfile.ZipFile(archive,'w',zipfile.ZIP_DEFLATED) as z:
         for p in helper.rglob('*'):
             if p.is_file(): z.write(p, helper_name+'/'+p.relative_to(helper).as_posix())
@@ -75,23 +75,24 @@ def main():
                        stdout=log,stderr=subprocess.STDOUT,check=True)
     if sha(copy)!=copied_sha: raise RuntimeError('Benchmark unexpectedly modified the input save copy')
     progress = json.loads((work/'script-output/recipe-mcp/progress.json').read_text(encoding='utf-8'))
-    raw_path = ROOT/'data/script-output/data-raw-dump.json'
+    raw_path = RAW_DUMP
     raw = json.loads(raw_path.read_text(encoding='utf-8'))
     runtime = progress.pop('prototype_recipes')
     mismatches = sorted(n for n in set(raw['recipe']) | set(runtime)
                         if n not in raw['recipe'] or n not in runtime or signature(raw['recipe'][n]) != signature(runtime[n],True))
     checksums = lambda p: dict(re.findall(r'Checksum of (.*): (\d+)',p.read_text(encoding='utf-8',errors='replace')))
-    original_checksums, loaded_checksums = checksums(ROOT/'data/export-console.log'), checksums(work/'console.log')
+    original_checksums, loaded_checksums = checksums(DATA_DIR/'export-console.log'), checksums(work/'console.log')
     loaded_checksums.pop(helper_name,None)
     progress['provenance'] = dict(source_save=str(source.resolve()), source_copy_sha256=copied_sha,
         exported_at=datetime.now(timezone.utc).isoformat(), extraction='one-tick benchmark of save copy with helper added; configuration-change handlers may run',
         prototype_raw_sha256=sha(raw_path), recipe_definitions_match=not mismatches,
         data_stage_checksums_match=bool(original_checksums) and original_checksums==loaded_checksums,
         mismatched_recipe_count=len(mismatches), mismatched_recipes=mismatches[:30], isolated_directory=str(work))
-    target = ROOT/'data/progress.json'
+    target = PROGRESS
     target.write_text(json.dumps(progress,ensure_ascii=False,indent=2),encoding='utf-8')
     summary = dict(output=str(target), provenance=progress['provenance'], forces={n:{'researched':sum(t['researched'] for t in f['technologies'].values()),
                  'enabled_recipes':sum(r['enabled'] for r in f['recipes'].values()),'current_research':f.get('current_research')} for n,f in progress['forces'].items()})
     print(json.dumps(summary,ensure_ascii=False,indent=2))
 
-if __name__ == '__main__': main()
+if __name__ == '__main__':
+    main()

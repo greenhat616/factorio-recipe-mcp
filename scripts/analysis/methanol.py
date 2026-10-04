@@ -11,7 +11,8 @@ import math
 from collections import defaultdict
 import numpy as np
 from scipy.optimize import linprog
-from database import Database, ROOT, amount
+from recipe_mcp.database import Database, amount
+from recipe_mcp.paths import DATA_DIR
 
 db = Database()
 
@@ -134,7 +135,7 @@ if __name__ == '__main__':
                 cases.append(solve(route=route,module_tier=2,force=args.force))
             except RuntimeError as e:
                 cases.append({'route':route,'force':args.force,'feasible':False,'reason':str(e)})
-        (ROOT/'data/methanol-current-stage.json').write_text(json.dumps(cases,indent=2),encoding='utf-8')
+        (DATA_DIR / 'methanol-current-stage.json').write_text(json.dumps(cases,indent=2),encoding='utf-8')
         for c in cases: print(c['route'], c.get('average_MW',c.get('reason')), 'stage valid:',c.get('stage_validation',{}).get('valid_at_stage'))
         raise SystemExit(0)
     cases = []
@@ -146,7 +147,7 @@ if __name__ == '__main__':
     cases.append(solve(modules='save-feedstock',theoretical=True))
     for route in ['normal', 'pressure']:
         cases.append(solve(route=route, module_tier=2,theoretical=True))
-    output = ROOT / 'data/methanol-analysis.json'
+    output = DATA_DIR / 'methanol-analysis.json'
     output.write_text(json.dumps(cases, indent=2), encoding='utf-8')
     for c in cases:
         print(c['target_per_second'], c['route'],c['module_policy'],c['water_source'],round(c['average_MW'],4),c['process_machines'])

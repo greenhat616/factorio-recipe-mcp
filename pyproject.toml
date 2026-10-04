@@ -1,12 +1,33 @@
 [project]
 name = "recipe-mcp"
-version = "0.1.0"
-description = "Factorio recipes, technologies and save-progress MCP server"
+version = "0.2.0"
+description = "Factorio recipes, technologies, save progress and production planning MCP server"
+readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
     "mcp==1.30.0",
+    "numpy==2.5.3",
     "scipy==1.18.1",
 ]
 
-[tool.uv]
-package = false
+[project.scripts]
+recipe-mcp = "recipe_mcp.server:main"
+recipe-mcp-client = "recipe_mcp.client:main"
+recipe-mcp-export = "recipe_mcp.export.prototypes:main"
+recipe-mcp-export-save = "recipe_mcp.export.save:main"
+
+[dependency-groups]
+dev = [
+    "pytest>=8",
+]
+
+[build-system]
+requires = ["uv_build>=0.12.7,<0.13.0"]
+build-backend = "uv_build"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"
+markers = [
+    "realdata: needs the exported prototype dump and a compatible save snapshot in data/",
+]

@@ -7,15 +7,16 @@ import subprocess
 import re
 from datetime import datetime, timezone
 
-ROOT = Path(__file__).resolve().parent
+from ..database import Database
+from ..paths import DATA_DIR
 
 def main():
-    ap = argparse.ArgumentParser()
+    ap = argparse.ArgumentParser(prog='recipe-mcp-export', description=__doc__)
     ap.add_argument('--factorio', default=r'D:\Program Files (x86)\Steam\steamapps\common\Factorio\bin\x64\factorio.exe')
     ap.add_argument('--mods', default=str(Path.home() / 'AppData/Roaming/Factorio/mods'))
     args = ap.parse_args()
     exe, mods = Path(args.factorio), Path(args.mods)
-    work = ROOT / 'data'
+    work = DATA_DIR
     work.mkdir(exist_ok=True)
     config = work / 'config.ini'
     config.write_text(f'[path]\nread-data={exe.parents[2].as_posix()}/data\nwrite-data={work.as_posix()}\n', encoding='utf-8')
@@ -33,7 +34,6 @@ def main():
     manifest.update(recipe_count=len(raw['recipe']), raw_sha256=hashlib.sha256(raw_path.read_bytes()).hexdigest())
     log_text = (work / 'export-console.log').read_text(encoding='utf-8', errors='replace')
     manifest['loaded_mod_versions'] = dict(re.findall(r'Loading mod ([^ ]+) ([^ ]+) \(data\.lua\)', log_text))
-    from database import Database
     db = Database(raw=raw)
     (work / 'recipes.json').write_text(json.dumps([db.recipe(n) for n in sorted(db.recipes)], ensure_ascii=False, indent=2), encoding='utf-8')
     (work / 'technologies.json').write_text(json.dumps([db.technology(n) for n in sorted(raw.get('technology',{}))], ensure_ascii=False, indent=2), encoding='utf-8')

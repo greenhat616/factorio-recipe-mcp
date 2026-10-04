@@ -1,8 +1,18 @@
 """Exact square-system solver (Factory Planner "matrix solver") and stoichiometric matrix analysis."""
+from collections.abc import Mapping, Sequence
+from typing import Any
+
 import numpy as np
+from numpy.typing import NDArray
+
+from ..database import JSON
+from .model import Line
+
+# Unknown of the square system: ('line', line index) or ('import' | 'surplus', item key).
+Column = tuple[str, Any]
 
 
-def recipe_matrix(lines):
+def recipe_matrix(lines: Sequence[Line]) -> tuple[list[str], NDArray[np.float64]]:
     """Items x lines net-per-craft matrix."""
     keys = sorted({k for r in lines for k in r['balance']})
     A = np.zeros((len(keys), len(lines)))
@@ -12,12 +22,15 @@ def recipe_matrix(lines):
     return keys, A
 
 
-def analyze_matrix(lines, targets, imports, surplus_items):
+def analyze_matrix(lines: Sequence[Line], targets: Mapping[str, float], imports: set[str], surplus_items: set[str]
+                   ) -> tuple[list[str], list[Column], NDArray[np.float64], NDArray[np.float64], JSON, list[int]]:
     """Factory Planner style square system: unknown roles chosen from item roles."""
     keys = sorted({k for r in lines for k in r['balance']} | set(targets))
     produced = {k for r in lines for k, v in r['balance'].items() if v > 0}
     consumed = {k for r in lines for k, v in r['balance'].items() if v < 0}
-    roles, imp, sur = {}, [], []
+    roles: dict[str, str] = {}
+    imp: list[str] = []
+    sur: list[str] = []
     for k in keys:
         if k in targets: roles[k] = 'target'
         elif k not in produced: roles[k] = 'raw'
@@ -28,7 +41,7 @@ def analyze_matrix(lines, targets, imports, surplus_items):
     free_lines = [j for j, r in enumerate(lines) if r['fixed_machines'] is None]
     fixed_lines = [j for j, r in enumerate(lines) if r['fixed_machines'] is not None]
     index = {k: i for i, k in enumerate(keys)}
-    cols = [('line', j) for j in free_lines] + [('import', k) for k in imp] + [('surplus', k) for k in sur]
+    cols: list[Column] = [('line', j) for j in free_lines] + [('import', k) for k in imp] + [('surplus', k) for k in sur]
     M = np.zeros((len(keys), len(cols)))
     b = np.array([targets.get(k, 0.0) for k in keys])
     for c, (kind, ref) in enumerate(cols):
@@ -43,7 +56,8 @@ def analyze_matrix(lines, targets, imports, surplus_items):
                 roles=roles, unknown_columns=[f'{k}:{lines[r]["id"] if k == "line" else r}' for k, r in cols])
     return keys, cols, M, b, info, fixed_lines
 
-def solve_matrix(lines, targets, imports, surplus_items, warnings):
+def solve_matrix(lines: Sequence[Line], targets: Mapping[str, float], imports: set[str], surplus_items: set[str],
+                 warnings: list[str]) -> JSON:
     keys, cols, M, b, info, fixed_lines = analyze_matrix(lines, targets, imports, surplus_items)
     label = info['unknown_columns']
     if info['degrees_of_freedom'] > 0:
@@ -60,7 +74,8 @@ def solve_matrix(lines, targets, imports, surplus_items, warnings):
         raise ValueError('Matrix inconsistent (over-determined): these items cannot balance exactly: ' + str(bad) +
                          '. Mark them as surplus_items or imports, or add a recipe that consumes/produces them.')
     x = np.zeros(len(lines))
-    imports_out, surplus_out = {}, {}
+    imports_out: dict[str, float] = {}
+    surplus_out: dict[str, float] = {}
     for c, (kind, ref) in enumerate(cols):
         if kind == 'line': x[ref] = sol[c]
         elif kind == 'import': imports_out[ref] = float(sol[c])

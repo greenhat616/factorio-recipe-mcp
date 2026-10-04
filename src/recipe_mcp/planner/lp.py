@@ -1,9 +1,16 @@
 """Linear-programming solver (HiGHS): alternatives, imports, penalised surplus, shadow prices."""
+from collections.abc import Mapping, Sequence
+
 import numpy as np
 from scipy.optimize import linprog
 
+from ..database import JSON
+from .model import Line
 
-def solve_lp(lines, targets, imports, forbid_imports, import_costs, allow_surplus, surplus_items, weights):
+
+def solve_lp(lines: Sequence[Line], targets: Mapping[str, float], imports: set[str], forbid_imports: set[str],
+             import_costs: Mapping[str, float], allow_surplus: bool, surplus_items: set[str],
+             weights: Mapping[str, float]) -> JSON:
     keys = sorted({k for r in lines for k in r['balance']} | set(targets))
     index = {k: i for i, k in enumerate(keys)}
     produced = {k for r in lines for k, v in r['balance'].items() if v > 0}
@@ -16,14 +23,14 @@ def solve_lp(lines, targets, imports, forbid_imports, import_costs, allow_surplu
     for j, k in enumerate(importable): A[index[k], L + j] = 1
     for j, k in enumerate(surplus_keys): A[index[k], L + I + j] = -1
     b = np.array([targets.get(k, 0.0) for k in keys])
-    c = []
+    c: list[float] = []
     for r in lines:
         per_craft_machines = 1 / r['crafts_per_machine']
         mw = (r['active_W'] + r['drain_W'] + r['beacon_W']) / 1e6 if r['energy_type'] == 'electric' else r['beacon_W'] / 1e6
         c.append(r['cost_weight'] * per_craft_machines * (weights['machines'] + weights['power_MW'] * mw))
     c += [weights['imports'] * import_costs.get(k, 1.0) for k in importable]
     c += [weights['surplus']] * S
-    bounds = []
+    bounds: list[tuple[float, float | None]] = []
     for r in lines:
         if r['fixed_machines'] is not None:
             v = r['fixed_machines'] * r['crafts_per_machine']

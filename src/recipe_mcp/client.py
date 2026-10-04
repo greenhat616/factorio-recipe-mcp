@@ -1,11 +1,12 @@
 """One-shot stdio MCP client: recipe-mcp-client [TOOL [JSON_ARGUMENTS]]; no TOOL lists tools."""
 import asyncio
+import io
 import json
 import sys
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
-async def run():
+async def run() -> None:
     # Same interpreter, so the client always talks to this checkout's server.
     params = StdioServerParameters(command=sys.executable, args=['-m', 'recipe_mcp'])
     async with stdio_client(params) as (read, write):
@@ -18,8 +19,9 @@ async def run():
                 print(result.model_dump_json(indent=2))
                 if result.isError: raise RuntimeError('MCP tool returned an error')
 
-def main():
-    sys.stdout.reconfigure(encoding='utf-8')
+def main() -> None:
+    # Tool results contain localized names; the Windows console default code page cannot encode them.
+    if isinstance(sys.stdout, io.TextIOWrapper): sys.stdout.reconfigure(encoding='utf-8')
     asyncio.run(run())
 
 

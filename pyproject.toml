@@ -18,6 +18,7 @@ recipe-mcp-export-save = "recipe_mcp.export.save:main"
 
 [dependency-groups]
 dev = [
+    "mypy>=2.4.0",
     "pytest>=8",
 ]
 
@@ -31,3 +32,19 @@ addopts = "-ra"
 markers = [
     "realdata: needs the exported prototype dump and a compatible save snapshot in data/",
 ]
+
+[tool.mypy]
+python_version = "3.13"
+files = ["src", "tests", "scripts"]
+# Scripts are run directly and import their siblings by bare module name.
+mypy_path = ["src", "scripts/analysis", "scripts/pressure_report"]
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+check_untyped_defs = true
+warn_unused_ignores = true
+warn_redundant_casts = true
+
+[[tool.mypy.overrides]]
+# Neither ships type information (no py.typed); stubs would add a dependency for little value here.
+module = ["scipy.*", "playwright.*"]
+ignore_missing_imports = true

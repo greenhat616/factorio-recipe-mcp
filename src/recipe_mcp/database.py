@@ -3,28 +3,37 @@ import json
 import hashlib
 import math
 from collections import defaultdict
+from collections.abc import Iterable, Mapping
 from pathlib import Path
+from typing import Any
 
 from .paths import PROGRESS, RAW_DUMP
 
-def amount(entry):
+# Prototypes, snapshots and tool results are JSON-shaped; their keys follow the game's data format.
+JSON = dict[str, Any]
+
+def amount(entry: JSON) -> float:
     return entry.get('probability', 1) * entry.get('amount', (entry.get('amount_min', 0) + entry.get('amount_max', 0)) / 2)
 
 class Database:
-    def __init__(self, path=None, raw=None, progress=None, default_force=None):
+    def __init__(self, path: str | Path | None = None, raw: JSON | None = None, progress: JSON | None = None,
+                 default_force: str | None = None) -> None:
         if raw is None:
             blob = Path(path or RAW_DUMP).read_bytes()
-            self.raw, self.raw_sha256 = json.loads(blob), hashlib.sha256(blob).hexdigest()
+            self.raw: JSON = json.loads(blob)
+            self.raw_sha256: str | None = hashlib.sha256(blob).hexdigest()
         else:
             self.raw, self.raw_sha256 = raw, None
         self.default_force = default_force
         snapshot = PROGRESS
-        self.progress = progress if progress is not None else (json.loads(snapshot.read_text(encoding='utf-8')) if snapshot.exists() else {})
+        self.progress: JSON = progress if progress is not None else (json.loads(snapshot.read_text(encoding='utf-8')) if snapshot.exists() else {})
         provenance = self.progress.get('provenance',{})
         self.progress_compatible = bool(self.raw_sha256 and provenance.get('prototype_raw_sha256')==self.raw_sha256
             and provenance.get('recipe_definitions_match') and provenance.get('data_stage_checksums_match'))
-        self.recipes = self.raw['recipe']
-        self.producers, self.consumers, self.unlocks = defaultdict(list), defaultdict(list), defaultdict(list)
+        self.recipes: dict[str, JSON] = self.raw['recipe']
+        self.producers: defaultdict[str, list[str]] = defaultdict(list)
+        self.consumers: defaultdict[str, list[str]] = defaultdict(list)
+        self.unlocks: defaultdict[str, list[str]] = defaultdict(list)
         for name, recipe in self.recipes.items():
             for key, index in [('ingredients', self.consumers), ('results', self.producers)]:
                 for entry in recipe.get(key, []):
@@ -34,7 +43,7 @@ class Database:
                 if effect['type'] == 'unlock-recipe':
                     self.unlocks[effect['recipe']].append(name)
 
-    def recipe(self, name, force=None):
+    def recipe(self, name: str, force: str | None = None) -> JSON:
         r = self.recipes[name]
         keys = ['name', 'category', 'ingredients', 'results', 'allow_productivity', 'maximum_productivity',
                 'hidden', 'localised_name', 'surface_conditions', 'allow_quality']
@@ -44,7 +53,7 @@ class Database:
                       virtual=self.virtual(name), availability=self.availability(name,force))
         return result
 
-    def force_name(self, force=None):
+    def force_name(self, force: str | None = None) -> str | None:
         name = force or self.default_force
         if name:
             if name not in self.progress.get('forces',{}): raise ValueError(f'Unknown force: {name}')
@@ -52,13 +61,13 @@ class Database:
         candidates = [n for n in self.progress.get('forces',{}) if n not in ['enemy','neutral']]
         return candidates[0] if len(candidates)==1 else None
 
-    def require_force(self, force=None):
+    def require_force(self, force: str | None = None) -> str:
         if not self.progress_compatible: raise ValueError('A compatible save progress snapshot is required. Run recipe-mcp-export-save.')
         name = self.force_name(force)
         if not name: raise ValueError('Multiple forces: select a force explicitly with force or --force. See get_progress_context.')
         return name
 
-    def context(self):
+    def context(self) -> JSON:
         return {'snapshot_loaded':bool(self.progress),'compatible':self.progress_compatible,
                 'default_force':self.default_force,'tick':self.progress.get('tick'),'provenance':self.progress.get('provenance'),
                 'forces':[{ 'name':n,'researched_count':sum(t['researched'] for t in f['technologies'].values()),
@@ -66,7 +75,7 @@ class Database:
                            'current_research':f.get('current_research'),'research_progress':f.get('research_progress'),
                            'research_queue':f.get('research_queue',[])} for n,f in self.progress.get('forces',{}).items()]}
 
-    def availability(self, name, force=None):
+    def availability(self, name: str, force: str | None = None) -> JSON:
         r = self.recipes[name]
         if self.virtual(name): return {'state':'virtual','usable_at_stage':False,'scope':'research gate only'}
         if not self.progress_compatible:
@@ -85,7 +94,7 @@ class Database:
                 'productivity_bonus':runtime.get('productivity_bonus',0),
                 'scope':'research gate only; machines, ingredients and surface conditions are separate'}
 
-    def technology(self, name, force=None):
+    def technology(self, name: str, force: str | None = None) -> JSON:
         t = self.raw['technology'][name]
         selected = self.force_name(force) if self.progress_compatible else None
         f = self.progress['forces'][selected] if selected else {}
@@ -104,7 +113,7 @@ class Database:
                 'progress':f.get('research_progress',0) if f.get('current_research')==name else runtime.get('saved_progress',0) if runtime else None,
                 'note':'available_to_research checks prerequisite/enabled flags, not science supply or trigger completion'}
 
-    def item_stage(self, name, force=None):
+    def item_stage(self, name: str, force: str | None = None) -> JSON:
         # Packaging/unpackaging is not proof that a new machine/module can be manufactured.
         candidates = [n for n in self.producers.get(name,[]) if not self.virtual(n) and
                       not any(s in n for s in ['unbox','boxed','barrel','canister','recycling','legacy'])]
@@ -115,7 +124,7 @@ class Database:
         return {'item':name,'buildable_at_stage':usable,'manufacturing_recipes':candidates,
                 'scope':'manufacturing research gate only; existing inventory not inspected'}
 
-    def machine_stage(self, name, force=None):
+    def machine_stage(self, name: str, force: str | None = None) -> JSON:
         m = next((self.raw[k][name] for k in ['assembling-machine','furnace','rocket-silo','mining-drill','beacon'] if name in self.raw.get(k,{})),None)
         if m is None: return {'machine':name,'buildable_at_stage':None,'reason':'No supported machine prototype'}
         place = m.get('placeable_by',{})
@@ -125,7 +134,8 @@ class Database:
             item = next((n for k in ['item','item-with-entity-data'] for n,i in self.raw.get(k,{}).items() if i.get('place_result')==name),None)
         return {'machine':name,**self.item_stage(item,force)} if item else {'machine':name,'buildable_at_stage':None,'reason':'No construction item mapping'}
 
-    def validate_plan(self, rates, force=None, machines=(), modules=()):
+    def validate_plan(self, rates: Mapping[str, float], force: str | None = None,
+                      machines: Iterable[str] = (), modules: Iterable[str] = ()) -> JSON:
         if any(not math.isfinite(x) or x<0 for x in rates.values()): raise ValueError('Recipe rates must be finite and nonnegative')
         selected = self.require_force(force)
         rows = [{'recipe':n,**self.availability(n,selected)} if n in self.recipes else
@@ -136,11 +146,11 @@ class Database:
                 'equipment':equipment,'blocked_equipment':[e for e in equipment if e['buildable_at_stage'] is not True],
                 'scope':'research gates only; does not prove ingredient supply, compatible machines or surface conditions'}
 
-    def virtual(self, name):
+    def virtual(self, name: str) -> bool:
         r = self.recipes[name]
         return r.get('category', '').startswith(('transport-drone-', 'transport-fluid-', 'transport-item-')) or name.startswith(('creative-mod', 'nullius-creative', 'request-'))
 
-    def machines(self, recipe, force=None):
+    def machines(self, recipe: str, force: str | None = None) -> list[JSON]:
         category = self.recipes[recipe].get('category', 'crafting')
         result = []
         for kind in ['assembling-machine', 'furnace', 'rocket-silo', 'character']:
@@ -152,9 +162,10 @@ class Database:
                                    'construction':self.machine_stage(name,force)})
         return result
 
-    def science(self, technology, force=None):
-        seen, packs = set(), set()
-        def visit(n):
+    def science(self, technology: str, force: str | None = None) -> JSON:
+        seen: set[str] = set()
+        packs: set[str] = set()
+        def visit(n: str) -> None:
             if n in seen: return
             seen.add(n)
             t = self.raw['technology'][n]
@@ -166,9 +177,9 @@ class Database:
                 'prerequisites_transitive': sorted(seen - {technology}),
                 'technology_state':self.technology(technology,force)}
 
-    def balance(self, rates):
+    def balance(self, rates: Mapping[str, float]) -> dict[str, float]:
         if any(not math.isfinite(x) or x<0 for x in rates.values()): raise ValueError('Recipe rates must be finite and nonnegative')
-        result = defaultdict(float)
+        result: defaultdict[str, float] = defaultdict(float)
         for name, rate in rates.items():
             for key, sign in [('ingredients', -1), ('results', 1)]:
                 for e in self.recipes[name].get(key, []): result[e['type'] + ':' + e['name']] += sign * amount(e) * rate

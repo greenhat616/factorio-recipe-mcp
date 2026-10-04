@@ -9,19 +9,21 @@ import argparse
 import json
 import math
 from collections import defaultdict
+from collections.abc import Iterable
 import numpy as np
 from scipy.optimize import linprog
-from recipe_mcp.database import Database, amount
+from recipe_mcp.database import JSON, Database, amount
 from recipe_mcp.paths import DATA_DIR
 
 db = Database()
 
-def mw(value):
+def mw(value: str) -> float:
     for suffix, factor in [('GW', 1000), ('MW', 1), ('kW', .001), ('W', .000001)]:
         if value.endswith(suffix): return float(value[:-len(suffix)]) * factor
     raise ValueError(value)
 
-def solve(q=100, route='normal', modules='optimize', water='sea', tier=2, module_tier=1, theoretical=False, force=None):
+def solve(q: float = 100, route: str = 'normal', modules: str = 'optimize', water: str = 'sea', tier: int = 2,
+          module_tier: int = 1, theoretical: bool = False, force: str | None = None) -> JSON:
     selected = None if theoretical else db.require_force(force)
     pairs = {
         'nullius-air': f'nullius-air-filter-{tier}',
@@ -58,6 +60,7 @@ def solve(q=100, route='normal', modules='optimize', water='sea', tier=2, module
         r, m = db.recipes[n], db.raw['assembling-machine'][machine]
         slots = m.get('module_slots', 0)
         choices = ['']
+        configs: Iterable[tuple[str, ...]]
         if modules == 'save-feedstock' and n in ['nullius-methane','nullius-methanol','nullius-pressure-methane','nullius-pressure-methanol']:
             configs = [tuple([f'nullius-yield-module-{module_tier}'] * slots)]
         elif modules in ['efficiency','save-feedstock']:
@@ -70,7 +73,7 @@ def solve(q=100, route='normal', modules='optimize', water='sea', tier=2, module
             configs = itertools.combinations_with_replacement(choices, slots)
         for config in configs:
             if not theoretical and any(mod and db.item_stage(mod,selected)['buildable_at_stage'] is not True for mod in config): continue
-            effects = defaultdict(float)
+            effects: defaultdict[str, float] = defaultdict(float)
             for mod in config:
                 if mod:
                     for k, v in db.raw['module'][mod]['effect'].items(): effects[k] += v
@@ -81,7 +84,7 @@ def solve(q=100, route='normal', modules='optimize', water='sea', tier=2, module
             seconds = r.get('energy_required', .5) / speed
             active = mw(m['energy_usage']) * max(.2, 1 + effects['consumption']) if m['energy_source']['type']=='electric' else 0
             drain = mw(m['energy_source'].get('drain', '0W'))
-            balance = defaultdict(float)
+            balance: defaultdict[str, float] = defaultdict(float)
             for e in r.get('ingredients', []): balance[e['name']] -= amount(e)
             for e in r.get('results', []):
                 base = amount(e)

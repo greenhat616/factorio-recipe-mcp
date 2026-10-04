@@ -10,20 +10,23 @@ import shutil
 import subprocess
 import tempfile
 import zipfile
+from typing import Any
+
+from ..database import JSON
 from ..paths import DATA_DIR, PROGRESS, RAW_DUMP, WORKSPACE_ROOT
 
-def sha(path):
+def sha(path: str | Path) -> str:
     return hashlib.sha256(Path(path).read_bytes()).hexdigest()
 
-def signature(recipe, runtime=False):
-    def entries(values):
+def signature(recipe: JSON, runtime: bool = False) -> tuple[Any, ...]:
+    def entries(values: list[JSON]) -> list[tuple[Any, ...]]:
         return sorted((e.get('type','item'), e['name'],
                        round(e.get('probability',1) * e.get('amount',(e.get('amount_min',0)+e.get('amount_max',0))/2),6),
                        e.get('temperature'),e.get('minimum_temperature'),e.get('maximum_temperature')) for e in values)
     return (recipe.get('category','crafting'), recipe.get('energy' if runtime else 'energy_required', .5),
             entries(recipe.get('ingredients',[])), entries(recipe.get('products' if runtime else 'results',[])))
 
-def main():
+def main() -> None:
     ap = argparse.ArgumentParser(prog='recipe-mcp-export-save', description=__doc__)
     ap.add_argument('--save', help='Explicit save path; defaults to the newest .zip in Factorio/saves')
     ap.add_argument('--factorio', default=r'D:\Program Files (x86)\Steam\steamapps\common\Factorio\bin\x64\factorio.exe')
@@ -36,7 +39,7 @@ def main():
     local_mods.mkdir()
     listed = json.loads((mods/'mod-list.json').read_text())
     enabled = {m['name']:m for m in listed['mods'] if m['enabled']}
-    archives = {}
+    archives: dict[str, tuple[tuple[int, ...], Path]] = {}
     for p in mods.glob('*.zip'):
         parts = p.stem.rsplit('_',1)
         if len(parts)!=2 or parts[0] not in enabled: continue
@@ -80,7 +83,8 @@ def main():
     runtime = progress.pop('prototype_recipes')
     mismatches = sorted(n for n in set(raw['recipe']) | set(runtime)
                         if n not in raw['recipe'] or n not in runtime or signature(raw['recipe'][n]) != signature(runtime[n],True))
-    checksums = lambda p: dict(re.findall(r'Checksum of (.*): (\d+)',p.read_text(encoding='utf-8',errors='replace')))
+    def checksums(p: Path) -> dict[str, str]:
+        return dict(re.findall(r'Checksum of (.*): (\d+)',p.read_text(encoding='utf-8',errors='replace')))
     original_checksums, loaded_checksums = checksums(DATA_DIR/'export-console.log'), checksums(work/'console.log')
     loaded_checksums.pop(helper_name,None)
     progress['provenance'] = dict(source_save=str(source.resolve()), source_copy_sha256=copied_sha,

@@ -6,7 +6,7 @@ Gas conversion and disposal equipment are distributed to their local workshops.
 import re
 from collections import defaultdict
 
-from recipe_mcp.database import amount
+from recipe_mcp.database import JSON, amount
 
 WORKSHOPS = [
     dict(id='utility', name='公用工程', factories='取水、过滤、制汽、冷凝、空分、纯制氢',
@@ -42,11 +42,11 @@ LAYOUTS = {
 }
 
 
-def normalized(value):
+def normalized(value: str) -> str:
     return re.sub(r'^(?:boxed-|unbox-|box-)', '', re.sub(r'^(?:nullius-|lambent-nil-)', '', value))
 
 
-def classify(name, recipe):
+def classify(name: str, recipe: JSON) -> str:
     n = normalized(name)
     cat = recipe.get('category', 'crafting')
     if 'pack' in n and re.search(r'(geology|climatology|mechanical|electrical|chemical|physics)-pack', n):
@@ -81,17 +81,17 @@ def classify(name, recipe):
     return 'assembly'
 
 
-def conversion(recipe):
+def conversion(recipe: JSON) -> bool:
     ins, outs = recipe.get('ingredients', []), recipe.get('results', [])
     return (recipe.get('category') in ['compression', 'decompression'] and len(ins) == len(outs) == 1
             and ins[0]['type'] == outs[0]['type'] == 'fluid')
 
 
-def is_void(recipe):
+def is_void(recipe: JSON) -> bool:
     return recipe.get('category') in ['nullius-liquid-void', 'nullius-gas-void']
 
 
-def build_zones(scenarios, raw):
+def build_zones(scenarios: list[JSON], raw: JSON) -> JSON:
     recipes = raw['recipe']
     definitions = {}
     output = {}
@@ -109,12 +109,12 @@ def build_zones(scenarios, raw):
             else:
                 allocations[classify(op['recipe'], r)].append(dict(op, allocation='whole'))
 
-        def gross(zone, material, direction, processes_only=False):
+        def gross(zone: str, material: str, direction: str, processes_only: bool = False) -> float:
             return sum(op['crafts_per_second'] * e['amount'] for op in allocations[zone]
                        if not processes_only or op['allocation'] == 'whole'
                        for e in definitions[op['recipe']][direction] if e['material'] == material)
 
-        def distribute(op, weights, why):
+        def distribute(op: JSON, weights: dict[str, float], why: str) -> None:
             total = sum(weights.values())
             assert total > 1e-8, (s['name'], op['recipe'])
             for zone, weight in weights.items():
@@ -149,10 +149,13 @@ def build_zones(scenarios, raw):
                 assert abs(actual - original[k]) < 1e-6, (s['name'], original['recipe'], k)
         scenario_layouts = {}
         for layout, groups in LAYOUTS.items():
-            zones = []
+            zones: list[JSON] = []
             for group in groups:
                 ops = [dict(op, workshop=member) for member in group['members'] for op in allocations[member]]
-                net, ins, outs, disposal = (defaultdict(float) for _ in range(4))
+                net: defaultdict[str, float] = defaultdict(float)
+                ins: defaultdict[str, float] = defaultdict(float)
+                outs: defaultdict[str, float] = defaultdict(float)
+                disposal: defaultdict[str, float] = defaultdict(float)
                 for op in ops:
                     definition = definitions[op['recipe']]
                     for key, sign, bucket in [('ingredients', -1, ins), ('results', 1, outs)]:
@@ -170,7 +173,7 @@ def build_zones(scenarios, raw):
                 zones.append(dict(group, recipes=ops, net={k: v for k, v in net.items() if abs(v) > 1e-6},
                                   internal_reuse={k: min(v, outs[k]) for k, v in ins.items() if min(v, outs[k]) > 1e-6},
                                   disposal=dict(disposal)))
-            total_net = defaultdict(float)
+            total_net: defaultdict[str, float] = defaultdict(float)
             for z in zones:
                 for k, v in z['net'].items():
                     total_net[k] += v

@@ -10,7 +10,7 @@ from playwright.sync_api import sync_playwright
 from recipe_mcp.paths import DATA_DIR, WORKSPACE_ROOT
 
 
-def check():
+def check() -> None:
     source = json.loads((DATA_DIR / 'pressure-transition-all.json').read_text(encoding='utf-8'))
     source = {s['name']: s for s in source}
     hydrogen = next(f['process_demand_per_second'] for f in source['entry_volcanic']['fluid_bus']
@@ -24,10 +24,10 @@ def check():
         assert page.locator('#cards article').count() == 3
         assert page.locator('#fluidRows tr').count() == 46
 
-        def hrow():
+        def hrow() -> list[str]:
             return page.locator('tr[data-fluid="nullius-compressed-hydrogen"] td').all_text_contents()
 
-        def number(value):
+        def number(value: str) -> float:
             return float(value.split('台泵')[0].split('\n')[0].replace(',', '').strip())
 
         assert f'{hydrogen:,.1f}' in hrow()[1]

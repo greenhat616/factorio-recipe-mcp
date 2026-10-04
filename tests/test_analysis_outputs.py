@@ -6,7 +6,7 @@ import pytest
 from recipe_mcp.paths import DATA_DIR
 
 
-def test_methanol_current_stage_cases():
+def test_methanol_current_stage_cases() -> None:
     path = DATA_DIR / 'methanol-current-stage.json'
     if not path.exists():
         pytest.skip('Run scripts/analysis/methanol.py --force <force> first')

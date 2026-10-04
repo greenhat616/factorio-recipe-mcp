@@ -8,12 +8,13 @@ import argparse
 import json
 import math
 from collections import defaultdict
+from collections.abc import Iterable
 
 import numpy as np
 from scipy.optimize import linprog
 from scipy.sparse import csc_matrix, eye, hstack, vstack
 
-from recipe_mcp.database import Database, amount
+from recipe_mcp.database import JSON, Database, amount
 from recipe_mcp.paths import DATA_DIR
 from science_fluids import watts
 
@@ -54,9 +55,9 @@ PREFERRED = {
 }
 
 
-def closure(db, targets):
-    seen = set()
-    def visit(n):
+def closure(db: Database, targets: Iterable[str]) -> set[str]:
+    seen: set[str] = set()
+    def visit(n: str) -> None:
         if n in seen:
             return
         seen.add(n)
@@ -68,11 +69,11 @@ def closure(db, targets):
 
 
 class Stage:
-    def __init__(self, db, force, targets=(), disabled=()):
+    def __init__(self, db: Database, force: str, targets: Iterable[str] = (), disabled: Iterable[str] = ()) -> None:
         self.db, self.force = db, force
         self.current = {n for n, t in db.progress['forces'][force]['technologies'].items() if t['researched']}
         self.added = closure(db, targets) - self.current
-        self.unlocks = defaultdict(list)
+        self.unlocks: defaultdict[str, list[str]] = defaultdict(list)
         for n in sorted(self.added):
             for pack in db.science(n, force)['science_packs']:
                 if pack not in PACKS:
@@ -96,13 +97,13 @@ class Stage:
                 if not item:
                     continue
                 manufacturers = []
-                for r in db.producers.get(item, []):
-                    recipe = db.recipes[r]
-                    if r not in self.allowed or recipe.get('category') in ['packaging', 'nullius-barrel', 'nullius-unbarrel']:
+                for producer in db.producers.get(item, []):
+                    recipe = db.recipes[producer]
+                    if producer not in self.allowed or recipe.get('category') in ['packaging', 'nullius-barrel', 'nullius-unbarrel']:
                         continue
                     net = sum(amount(e) for e in recipe.get('results', []) if e['name'] == item) - sum(amount(e) for e in recipe.get('ingredients', []) if e['name'] == item)
-                    if net > 0 and not any(s in r for s in ['legacy', 'recycling']):
-                        manufacturers.append(r)
+                    if net > 0 and not any(s in producer for s in ['legacy', 'recycling']):
+                        manufacturers.append(producer)
                 if not manufacturers or m.get('energy_source', {}).get('type') not in ['electric', 'void', 'heat']:
                     continue
                 self.equipment[n] = dict(item=item, manufacturing_recipes=manufacturers)
@@ -122,7 +123,8 @@ class Stage:
                                       energy_type=proto.get('energy_source', {}).get('type'))
 
 
-def solve(db, force, name, targets, rate, conserve_volcanic=False, disabled=(), volcanic_cap=None):
+def solve(db: Database, force: str, name: str, targets: Iterable[str], rate: float, conserve_volcanic: bool = False,
+          disabled: Iterable[str] = (), volcanic_cap: float | None = None) -> JSON:
     stage = Stage(db, force, targets, disabled)
     banned = {old for preferred, older in PREFERRED.items() if preferred in stage.operations for old in older}
     # Keep the already-adopted second geology/climatology processes. Otherwise a
@@ -152,7 +154,8 @@ def solve(db, force, name, targets, rate, conserve_volcanic=False, disabled=(), 
     for n, op in stage.operations.items():
         if n in banned or n in conversions:
             continue
-        balance, extra = defaultdict(float), defaultdict(float)
+        balance: defaultdict[str, float] = defaultdict(float)
+        extra: defaultdict[str, float] = defaultdict(float)
         for key, sign in [('ingredients', -1), ('results', 1)]:
             for e in op['recipe'].get(key, []):
                 material, quantity = e['type'] + ':' + e['name'], amount(e)
@@ -202,7 +205,8 @@ def solve(db, force, name, targets, rate, conserve_volcanic=False, disabled=(), 
                              A_eq=hstack([matrix, eye(len(materials)), -eye(len(materials))]), b_eq=target, bounds=(0, None), method='highs')
         missing = [(n, diagnostic.x[len(columns)+i]) for i, n in enumerate(materials) if diagnostic.success and diagnostic.x[len(columns)+i] > 1e-6]
         raise RuntimeError(name + ': ' + result.message + repr(missing))
-    rates, supplies = defaultdict(float), {}
+    rates: defaultdict[str, float] = defaultdict(float)
+    supplies: dict[str, float] = {}
     for c, v in zip(columns, result.x):
         if v < 1e-8:
             continue
@@ -219,9 +223,13 @@ def solve(db, force, name, targets, rate, conserve_volcanic=False, disabled=(), 
     residual = max(abs(check.get(n, 0) - (rate if n in {'item:' + p for p in PACKS} else 0)) for n in all_materials)
     assert residual < 1e-4, residual
     assert all(n in stage.allowed for n in rates)
-    demand, output, disposal = defaultdict(float), defaultdict(float), defaultdict(float)
-    native_use, decompressed_use, co_products = defaultdict(float), defaultdict(float), defaultdict(float)
-    uses = defaultdict(list)
+    demand: defaultdict[str, float] = defaultdict(float)
+    output: defaultdict[str, float] = defaultdict(float)
+    disposal: defaultdict[str, float] = defaultdict(float)
+    native_use: defaultdict[str, float] = defaultdict(float)
+    decompressed_use: defaultdict[str, float] = defaultdict(float)
+    co_products: defaultdict[str, float] = defaultdict(float)
+    uses: defaultdict[str, list[JSON]] = defaultdict(list)
     active = []
     for n, crafts in sorted(rates.items()):
         op = stage.operations[n]
@@ -294,7 +302,7 @@ if __name__ == '__main__':
         ('carbon_without_new_recipes', INDUSTRIAL + ['nullius-carbon-sequestration-3'], False,
          ['nullius-carbon-dioxide-electrolysis', 'nullius-carbon-deposition', 'nullius-carbon-sink']),
     ]
-    results = []
+    results: list[JSON] = []
     for name, targets, conserve, disabled in cases:
         cap = results[0]['supplies']['fluid:nullius-volcanic-gas'] if name == 'industrial_capped' else None
         report = solve(db, args.force, name, targets, args.rate, conserve, disabled, cap)

@@ -12,18 +12,18 @@ import numpy as np
 from scipy.optimize import linprog
 from scipy.sparse import csc_matrix, eye, hstack
 
-from recipe_mcp.database import Database, amount
+from recipe_mcp.database import JSON, Database, amount
 from recipe_mcp.paths import DATA_DIR
 
 
-def watts(value):
+def watts(value: str) -> float:
     for suffix, factor in [('GW', 1e9), ('MW', 1e6), ('kW', 1e3), ('W', 1)]:
         if value.endswith(suffix):
             return float(value[:-len(suffix)]) * factor
     raise ValueError(value)
 
 
-def analyze(force, rate, power=True):
+def analyze(force: str | None, rate: float, power: bool = True) -> JSON:
     db = Database()
     force = db.require_force(force)
     packs = ['nullius-' + x + '-pack' for x in
@@ -64,13 +64,13 @@ def analyze(force, rate, power=True):
         if not options:
             continue
         energy = recipe.get('energy_required', .5)
-        def process_cost(pair):
+        def process_cost(pair: tuple[str, JSON]) -> float:
             m = pair[1]
             seconds = energy / m.get('crafting_speed', 1)
             return seconds * (watts(m.get('energy_usage', '0W')) +
                               watts(m.get('energy_source', {}).get('drain', '0W'))) / 1e6
         machine_name, machine = min(options, key=process_cost) if power else max(options, key=lambda p: p[1].get('crafting_speed', 1))
-        balance = defaultdict(float)
+        balance: defaultdict[str, float] = defaultdict(float)
         for key, sign in [('ingredients', -1), ('results', 1)]:
             for entry in recipe.get(key, []):
                 balance[entry['type'] + ':' + entry['name']] += sign * amount(entry)
@@ -119,10 +119,13 @@ def analyze(force, rate, power=True):
             inputs, outputs = recipe.get('ingredients', []), recipe.get('results', [])
             if len(inputs) == len(outputs) == 1:
                 gas_equivalence[outputs[0]['name']] = (inputs[0]['name'], amount(inputs[0]) / amount(outputs[0]))
-    demand, produced, voided = defaultdict(float), defaultdict(float), defaultdict(float)
-    procured_fluids = defaultdict(float)
-    physical_input, physical_output = defaultdict(float), defaultdict(float)
-    consumers = defaultdict(list)
+    demand: defaultdict[str, float] = defaultdict(float)
+    produced: defaultdict[str, float] = defaultdict(float)
+    voided: defaultdict[str, float] = defaultdict(float)
+    procured_fluids: defaultdict[str, float] = defaultdict(float)
+    physical_input: defaultdict[str, float] = defaultdict(float)
+    physical_output: defaultdict[str, float] = defaultdict(float)
+    consumers: defaultdict[str, list[JSON]] = defaultdict(list)
     active, rates = [], {}
     for column, crafts in zip(columns, result.x):
         if crafts < 1e-8:

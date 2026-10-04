@@ -2,20 +2,23 @@
 import asyncio
 import json
 import sys
+from typing import Any
 
 import pytest
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
+from recipe_mcp.database import JSON, Database
 
-async def run(db, force):
+
+async def run(db: Database, force: str) -> None:
     params=StdioServerParameters(command=sys.executable,args=['-m','recipe_mcp'])
     async with stdio_client(params) as (read,write):
         async with ClientSession(read,write) as session:
             await session.initialize()
             listing=await session.list_tools()
             assert len(listing.tools)==14
-            async def call(name,args,error=False):
+            async def call(name: str, args: JSON, error: bool = False) -> Any:
                 result=await session.call_tool(name,args)
                 assert bool(result.isError)==error, result
                 return [json.loads(c.text) for c in result.content if c.type=='text'] if not error else result
@@ -62,6 +65,6 @@ async def run(db, force):
 
 
 @pytest.mark.realdata
-def test_stdio_tools(real_db, force):
+def test_stdio_tools(real_db: Database, force: str) -> None:
     """All 14 tools over real stdio: pagination, force selection, locked-recipe/machine rejection, theory mode."""
     asyncio.run(run(real_db, force))

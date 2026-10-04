@@ -2,15 +2,17 @@
 import json
 import re
 from pathlib import Path
+from typing import Any
+
 from recipe_mcp.paths import DATA_DIR, PROGRESS, RAW_DUMP, WORKSPACE_ROOT
 from zones import build_zones
 
 TEMPLATES = Path(__file__).resolve().parent / 'templates'
 
 
-def build():
+def build() -> None:
     scenarios = json.loads((DATA_DIR / 'pressure-transition-all.json').read_text(encoding='utf-8'))
-    sections = {}
+    sections: dict[str, dict[str, str]] = {}
     locale_paths = list(Path('D:/Program Files (x86)/Steam/steamapps/common/Factorio/data/base/locale/zh-CN').glob('*.cfg'))
     locale_paths.append(WORKSPACE_ROOT / 'aotixnullius-hotfix/locale/zh-CN/nullius_2.0.10.cfg')
     for path in locale_paths:
@@ -33,7 +35,7 @@ def build():
             'volcanic_extraction_cap', 'fluid_bus', 'supplies', 'active_recipes',
             'machines_continuous', 'electrical_MW', 'thermal_MW', 'added_targets']
     raw = json.loads(RAW_DUMP.read_text(encoding='utf-8'))
-    def localized(spec, depth=0):
+    def localized(spec: Any, depth: int = 0) -> str | None:
         if depth > 12:
             return None
         if isinstance(spec, str):
@@ -42,7 +44,8 @@ def build():
             return None
         if not spec[0]:
             values = [localized(v, depth + 1) for v in spec[1:]]
-            return ''.join(values) if all(v is not None for v in values) else None
+            present = [v for v in values if v is not None]
+            return ''.join(present) if len(present) == len(values) else None
         section, _, key = spec[0].partition('.')
         value = sections.get(section, {}).get(key)
         if value is None:
@@ -52,7 +55,7 @@ def build():
             if replacement is None:
                 return None
             value = value.replace(f'__{i}__', replacement)
-        def expand(match):
+        def expand(match: re.Match[str]) -> str:
             kind, ident = match.groups()
             return sections.get(kind.lower() + '-name', {}).get(ident, ident)
         return re.sub(r'__(ITEM|FLUID|ENTITY|RECIPE|TECHNOLOGY)__([^_]+(?:_[^_]+)*)__', expand, value)

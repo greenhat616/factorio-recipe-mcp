@@ -1,7 +1,10 @@
 """Public entry points used by the MCP server, scripts and tests."""
 import math
+from collections.abc import Iterable, Mapping, Sequence
 
 import numpy as np
+
+from ..database import JSON, Database
 
 from .lp import solve_lp
 from .matrix import analyze_matrix, recipe_matrix, solve_matrix
@@ -9,15 +12,18 @@ from .model import OBJECTIVES, TIME, Planner
 from .report import report
 
 
-def plan(db, targets, lines=(), solver='lp', per='second', defaults=None, auto_discover=None, imports=(), forbid_imports=(),
-         import_costs=None, allow_surplus=True, surplus_items=(), objective='balanced', weights=None, exclude_recipes=(),
-         max_depth=12, max_lines=1000, include_hidden=False, allow_mining=True, mining_productivity=0.0,
-         research_productivity=True, force='', validate_stage=True):
+def plan(db: Database, targets: Mapping[str, float], lines: Sequence[str | JSON] = (), solver: str = 'lp',
+         per: str = 'second', defaults: JSON | None = None, auto_discover: bool | None = None, imports: Iterable[str] = (),
+         forbid_imports: Iterable[str] = (), import_costs: Mapping[str, float] | None = None, allow_surplus: bool = True,
+         surplus_items: Iterable[str] = (), objective: str = 'balanced', weights: Mapping[str, float] | None = None,
+         exclude_recipes: Iterable[str] = (), max_depth: int = 12, max_lines: int = 1000, include_hidden: bool = False,
+         allow_mining: bool = True, mining_productivity: float = 0.0, research_productivity: bool = True,
+         force: str = '', validate_stage: bool = True) -> JSON:
     if per not in TIME: raise ValueError('per must be second, minute or hour')
     if solver not in ('lp', 'matrix'): raise ValueError('solver must be lp or matrix')
     factor = TIME[per]
     p = Planner(db, force, validate_stage, research_productivity, mining_productivity)
-    tgt = {}
+    tgt: dict[str, float] = {}
     for name, rate in targets.items():
         if not math.isfinite(rate) or rate < 0: raise ValueError('Target rates must be finite and nonnegative')
         tgt[p.key(name)] = rate / factor
@@ -59,13 +65,15 @@ def plan(db, targets, lines=(), solver='lp', per='second', defaults=None, auto_d
     return out
 
 
-def machine_stats(db, recipe, machine='', modules=None, beacons=(), defaults=None, rate=None, item='', per='second',
-                  force='', validate_stage=True, mining_productivity=0.0, research_productivity=True):
+def machine_stats(db: Database, recipe: str, machine: str = '', modules: Mapping[str, int] | Sequence[str] | None = None,
+                  beacons: Iterable[JSON] = (), defaults: JSON | None = None, rate: float | None = None, item: str = '',
+                  per: str = 'second', force: str = '', validate_stage: bool = True, mining_productivity: float = 0.0,
+                  research_productivity: bool = True) -> JSON:
     """Single line calculator (one recipe in one machine), optional machine count for a rate."""
     if per not in TIME: raise ValueError('per must be second, minute or hour')
     factor = TIME[per]
     p = Planner(db, force, validate_stage, research_productivity, mining_productivity)
-    spec = {'recipe': recipe, 'beacons': list(beacons)}
+    spec: JSON = {'recipe': recipe, 'beacons': list(beacons)}
     if machine: spec['machine'] = machine
     if modules is not None: spec['modules'] = modules
     r = p.line(spec, defaults or {})
@@ -87,7 +95,9 @@ def machine_stats(db, recipe, machine='', modules=None, beacons=(), defaults=Non
     return out
 
 
-def production_matrix(db, lines, targets=None, imports=(), surplus_items=(), defaults=None, force='', validate_stage=False, dense_limit=60):
+def production_matrix(db: Database, lines: Sequence[str | JSON], targets: Mapping[str, float] | None = None,
+                      imports: Iterable[str] = (), surplus_items: Iterable[str] = (), defaults: JSON | None = None,
+                      force: str = '', validate_stage: bool = False, dense_limit: int = 60) -> JSON:
     """Stoichiometric matrix (items x lines), rank and Factory Planner style determinacy report."""
     p = Planner(db, force, validate_stage)
     rows = [p.line(s, defaults or {}) for s in lines]

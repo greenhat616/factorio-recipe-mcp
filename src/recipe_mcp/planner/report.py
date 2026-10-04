@@ -2,12 +2,17 @@
 import math
 from collections import defaultdict
 
-from .model import EPS
+from collections.abc import Mapping, Sequence
+
+from ..database import JSON
+from .model import EPS, Line, Planner
 
 
-def report(planner, lines, solution, targets, factor, prices_limit=40):
-    flows = defaultdict(lambda: {'produced': 0.0, 'consumed': 0.0})
-    rows, total = [], defaultdict(float)
+def report(planner: Planner, lines: Sequence[Line], solution: JSON, targets: Mapping[str, float], factor: float,
+           prices_limit: int = 40) -> JSON:
+    flows: defaultdict[str, dict[str, float]] = defaultdict(lambda: {'produced': 0.0, 'consumed': 0.0})
+    rows: list[JSON] = []
+    total: defaultdict[str, float] = defaultdict(float)
     for r, x in zip(lines, solution['x']):
         if abs(x) < EPS: continue
         machines = x / r['crafts_per_machine']
@@ -32,7 +37,7 @@ def report(planner, lines, solution, targets, factor, prices_limit=40):
         total['non_electric_fuel_MW'] += fuel / 1e6; total['pollution_per_minute'] += machines * r['pollution_per_minute']
     for k, v in solution['imports'].items(): flows[k]['import'] = v
     for k, v in solution['surplus'].items(): flows[k]['surplus'] = v
-    items = []
+    items: list[JSON] = []
     for k in sorted(flows):
         f = flows[k]
         if max(abs(v) for v in f.values()) < EPS: continue

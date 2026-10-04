@@ -7,10 +7,10 @@ import subprocess
 import re
 from datetime import datetime, timezone
 
-from ..database import Database
+from ..database import JSON, Database
 from ..paths import DATA_DIR
 
-def main():
+def main() -> None:
     ap = argparse.ArgumentParser(prog='recipe-mcp-export', description=__doc__)
     ap.add_argument('--factorio', default=r'D:\Program Files (x86)\Steam\steamapps\common\Factorio\bin\x64\factorio.exe')
     ap.add_argument('--mods', default=str(Path.home() / 'AppData/Roaming/Factorio/mods'))
@@ -23,7 +23,7 @@ def main():
     mod_list = (mods / 'mod-list.json').read_bytes()
     (work / 'mod-list.snapshot.json').write_bytes(mod_list)
     settings = mods / 'mod-settings.dat'
-    manifest = {'exported_at': datetime.now(timezone.utc).isoformat(), 'mods_directory': str(mods),
+    manifest: JSON = {'exported_at': datetime.now(timezone.utc).isoformat(), 'mods_directory': str(mods),
                 'mod_list_sha256': hashlib.sha256(mod_list).hexdigest(),
                 'startup_settings_sha256': hashlib.sha256(settings.read_bytes()).hexdigest() if settings.exists() else None}
     with (work / 'export-console.log').open('w', encoding='utf-8') as log:

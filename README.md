@@ -4,7 +4,7 @@ Factorio recipe, technology and save-progress queries plus Helmod / Factory Plan
 
 ## Entry points
 
-The same 14 tools are reachable two ways:
+The same 20 tools are reachable two ways:
 
 | Entry | Command | Use |
 |---|---|---|
@@ -72,6 +72,12 @@ uv run --directory recipe-mcp recipe-mcp-cli validate_plan '{"recipe_rates":{"nu
 | `solve_production` | LP or matrix production solver: machine counts, module/beacon effects, power, pollution, imports, surplus, shadow prices |
 | `machine_stats` | One recipe in one machine: effective speed/productivity/power multipliers, per-machine flow, machines for a rate |
 | `production_matrix` | Item × line stoichiometric matrix, rank, item roles and determinacy diagnostics |
+| `plan_list` | Saved plans with revision, update time and staleness |
+| `plan_get` | One saved plan: block requests and last result summaries |
+| `plan_save` | Create or overwrite a named plan of blocks |
+| `plan_edit` | Atomic, revision-checked edit operations on a plan |
+| `plan_solve` | Solve a plan's blocks in dependency order and sum them into a factory ledger |
+| `plan_delete` | Move a plan to the trash folder |
 
 Every result is a pydantic model, so each tool publishes an output schema and returns `structuredContent` alongside the JSON text. Names are internal prototype IDs; localized names come back as raw locale keys. `net_balance` ignores modules and force productivity bonuses and does not treat fluids at different temperatures as interchangeable.
 
@@ -94,7 +100,7 @@ A machine or module counts as buildable when its item's crafting recipe is usabl
 
 ## Production planning (`recipe_mcp.planner`)
 
-A line is `{recipe, id?, machine?, modules?, beacons?: [{beacon, count, modules, per_machine?}], fixed_machines?, max_machines?, cost_weight?, ignore_module_rules?}`; `recipe` may be `mining:<resource>`. A bare recipe name is also accepted. Line specs, `defaults` and beacons are pydantic models (`LineSpec`, `Defaults`, `BeaconSpec`): the tools publish them in their input schema, and unknown keys are rejected rather than ignored.
+A line is `{recipe, id?, machine?, modules?, beacons?: [{beacon, count, modules, per_machine?, interference?}], fixed_machines?, max_machines?, cost_weight?, ignore_module_rules?}`; `recipe` may be `mining:<resource>`. A bare recipe name is also accepted. Line specs, `defaults` and beacons are pydantic models (`LineSpec`, `Defaults`, `BeaconSpec`): the tools publish them in their input schema, and unknown keys are rejected rather than ignored.
 
 Effects follow the 2.0 prototype docs:
 
@@ -102,7 +108,7 @@ Effects follow the 2.0 prototype docs:
 - The machine's `effect_receiver.base_effect` and the force's recipe productivity bonus from the save are also added.
 - Speed, consumption and pollution multipliers are floored at 20%.
 - Productivity is clamped to `[0, maximum_productivity]`, and is 0 when the recipe disallows it.
-- A beneficial module effect the machine, beacon (`allowed_effects`) or recipe (`allow_*`) does not permit is an error.
+- A beneficial module effect the machine, beacon (`allowed_effects`) or recipe (`allow_*`) does not permit is an error, and so is a module whose category the machine or beacon excludes (`allowed_module_categories`).
 - Electric crafting machines without a declared `drain` draw `energy_usage / 30` ([CraftingMachinePrototype](https://lua-api.factorio.com/2.0.77/prototypes/CraftingMachinePrototype.html#energy_usage)).
 
 Two solvers:
@@ -118,6 +124,31 @@ Two solvers:
 
 Typical flow: let `lp` pick the routes, then pass `lines_for_matrix` and `matrix_args` to `matrix` to pin the plan, and adjust machines, modules and beacons line by line. `per` is `second`, `minute` or `hour`.
 
+### Calculation modes (lp)
+
+- **`limits`**: `{imports: {item: rate}, power_MW, machines, machines_by_type: {machine: n}, beacons, beacons_by_type: {beacon: n}, modules: {module: n}, pollution_per_minute}`. Rates are per `per`; counts are fractional. `machines` excludes beacons and disposal machines. A capped import is allowed even when the item has a producing line. Every limit comes back in `limits_usage`; binding ones are listed in `bottlenecks` with their marginal value.
+- **`mode="maximize"`**: targets are ratios. The LP first finds the largest `scale` (output = `scale` × ratio) that fits the limits, then the cheapest plan at that scale. Bottleneck marginals are the scale gained per unit of limit. Without any limit the problem is unbounded and is rejected.
+- **`consume`**: `{item: rate}` supplied externally and used up exactly, never imported or left over. Works with targets or ratios in `lp`; in `matrix` the targets may be empty and the outputs come back as byproducts (Helmod input mode).
+- **Infeasibility**: when limits or consume amounts cannot all hold, the result has `status: "infeasible"`, the relaxations the elastic LP needed in `infeasibility` (a limit raised, a target or consume amount lowered), `suggestions`, and the relaxed plan in `lines`. The relaxations minimise the total relative violation together, so they are one combination, not each quantity's own maximum. `fixed_machines` and `max_machines` stay hard.
+- **Disposal** (`disposal="report"`, default): each surplus byproduct gets the void recipe and machine that vents it with the fewest machines, preferring the most power-efficient machine (`disposal_defaults` overrides, including modules). They are reported in `disposal`, `disposal_totals` and `totals_with_disposal`; `totals` and the route stay unchanged.
+
+### Modules and beacons
+
+- A beacon's `count` is how many beacons affect each machine (the effect); `per_machine` is how many beacon entities each machine accounts for (power and counts), lower than `count` when beacons are shared.
+- `interference: k` uses the Nullius small-beacon variant `<beacon>-k` (k large-beacon interference fields); writing the variant name directly works too. Counts use the item that places the beacon, so variants count as their base beacon.
+- Results give `beacon_count`, `beacon_count_ceil` and `beacon_power_MW` per line and in `totals`, `totals.beacon_count_by_type`, and `module_inventory` (machine slots plus beacon slots, disposal machines included; beacon modules count once per beacon entity).
+- Several lines of one recipe with different modules (distinct `id`s) plus `limits.modules` let the LP allocate a limited module stock.
+- `defaults.module_options` (automatic module selection) and the `beacons` / `modules` objective weights are reserved and rejected as not implemented.
+
+### Plans
+
+A plan is a named JSON file in `data/plans/` with blocks, each a `solve_production` request without `force` and `per` (those are plan-wide) plus a summary of its last result.
+
+- `plan_save` validates every block like `solve_production` would, without solving, before writing. Names are 1-64 characters of `A-Z a-z 0-9 _ . -`.
+- `plan_edit` applies a list of operations all or nothing and bumps the revision; pass `expected_revision` to fail on a concurrent change. `pin` replaces a block's lines with its last result's `lines_for_matrix` (optionally switching solver); `set_modules`, `set_beacons` and `replace_module` change modules and beacons on lines or block defaults.
+- A target may be a link `{"from": ["block", ...] | "*", "plus": n}`: the sum of what those blocks import of the item. `plan_solve` solves the blocks in dependency order (cycles are reported with their path) and returns per-block results and a factory ledger: `net_inputs`, `net_outputs`, `internal_transfers`, totals, beacons, modules, and disposal for the surplus other blocks do not take. It assumes a shared bus and solves blocks independently.
+- Plans record the prototype hash, save tick and save copy hash and report `fresh`, `stage_changed` or `prototypes_changed`. Stale plans still solve with the current data, with a warning. `plan_delete` moves the file to `data/plans/.trash/`.
+
 Not modeled:
 
 - Quality and surface effects.
@@ -132,6 +163,12 @@ Fluid temperatures only raise warnings.
 uv run --directory recipe-mcp recipe-mcp-cli solve_production '{"targets":{"nullius-methanol":600},"per":"minute","force":"faction-a632079"}'
 uv run --directory recipe-mcp recipe-mcp-cli machine_stats '{"recipe":"nullius-methanol","rate":10,"force":"faction-a632079"}'
 uv run --directory recipe-mcp recipe-mcp-cli solve_production '{"targets":{"nullius-methanol":10},"objective":"power","defaults":{"modules":["nullius-yield-module-2","nullius-speed-module-2"]},"force":"faction-a632079"}'
+uv run --directory recipe-mcp recipe-mcp-cli solve_production '{"targets":{"nullius-methanol":1},"mode":"maximize","limits":{"power_MW":5,"imports":{"nullius-box-limestone":2}},"force":"faction-a632079"}'
+uv run --directory recipe-mcp recipe-mcp-cli machine_stats '{"recipe":"nullius-methanol","beacons":[{"beacon":"nullius-beacon-2","interference":1,"modules":["nullius-speed-module-1"]}],"force":"faction-a632079","validate_stage":false}'
+uv run --directory recipe-mcp recipe-mcp-cli plan_save '{"name":"methanol-10ps","force":"faction-a632079","blocks":[{"id":"methanol","request":{"targets":{"nullius-methanol":10}}}]}'
+uv run --directory recipe-mcp recipe-mcp-cli plan_solve '{"name":"methanol-10ps"}'
+uv run --directory recipe-mcp recipe-mcp-cli plan_edit '{"name":"methanol-10ps","ops":[{"op":"pin","block_id":"methanol"}]}'
+uv run --directory recipe-mcp recipe-mcp-cli plan_delete '{"name":"methanol-10ps","confirm":"methanol-10ps"}'
 ```
 
 ## Data export
@@ -181,6 +218,7 @@ After re-exporting, restart the server in your MCP client. The CLI starts a fres
 | `data/manifest.json`, `data/mod-list.snapshot.json` | Prototype export provenance and hashes |
 | `data/progress.json` | Per-force technology and recipe state, provenance and consistency checks |
 | `data/progress-*/` | Isolated load directory, save copy, helper output and logs, kept for auditing |
+| `data/plans/` | Saved plans; `.trash/` holds deleted ones |
 | `../factorio-recipe-progress-helper_0.1.0.zip` | Helper mod package |
 
 `data/` is not tracked by git. `RECIPE_MCP_HOME` overrides the project root and `RECIPE_MCP_DATA` only the data directory.
@@ -201,10 +239,17 @@ recipe-mcp/
 │   ├── planner/                 production planning
 │   │   ├── schema.py            pydantic models: line specs, defaults, normalised lines, solutions, results
 │   │   ├── model.py             line model: machines, modules, beacons, productivity, power, gating, discovery
-│   │   ├── lp.py                LP solver (HiGHS)
+│   │   ├── lp.py                LP builder and solver (HiGHS): limits, maximize, consume, elastic diagnosis
+│   │   ├── limits.py            limits -> LP rows; usage, bottleneck and infeasibility reports
 │   │   ├── matrix.py            exact matrix solver and stoichiometric analysis
-│   │   ├── report.py            result shaping: lines, item flows, totals, shadow prices
+│   │   ├── disposal.py          void machines for surplus byproducts
+│   │   ├── report.py            result shaping: lines, item flows, totals, beacons, modules, shadow prices
 │   │   └── api.py               plan / machine_stats / production_matrix
+│   ├── plans/                   saved plans
+│   │   ├── models.py            plan file schema, block requests, result summaries, edit operations
+│   │   ├── store.py             PlanStore: names, validation, atomic writes, revisions, fingerprints, trash
+│   │   ├── ops.py               plan_edit operations and pin
+│   │   └── factory.py           plan_solve: dependency order, linked targets, factory ledger
 │   └── export/                  prototypes.py (recipe-mcp-export), save.py (recipe-mcp-export-save)
 ├── scripts/                     one-off analyses, not part of the package; they import recipe_mcp
 │   ├── analysis/                methanol.py, science_fluids.py, pressure_transition.py

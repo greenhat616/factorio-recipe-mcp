@@ -336,6 +336,11 @@ EditOp = Annotated[
 ]
 
 
+class PlanDeleted(BaseModel):
+    name: str
+    trash_path: str
+
+
 class EditResult(BaseModel):
     plan: str
     revision: int

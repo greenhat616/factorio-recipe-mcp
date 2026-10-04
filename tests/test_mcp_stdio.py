@@ -3,6 +3,7 @@
 import asyncio
 import json
 import sys
+import uuid
 from typing import Any
 
 import pytest
@@ -10,15 +11,16 @@ from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
 from recipe_mcp.database import JSON, Database
+from recipe_mcp.paths import PLANS_DIR
 
 
-async def run(db: Database, force: str) -> None:
+async def run(db: Database, force: str, plan_name: str) -> None:
     params = StdioServerParameters(command=sys.executable, args=['-m', 'recipe_mcp'])
     async with stdio_client(params) as (read, write):
         async with ClientSession(read, write) as session:
             await session.initialize()
             listing = await session.list_tools()
-            assert len(listing.tools) == 14
+            assert len(listing.tools) == 20
 
             async def call(name: str, args: JSON, error: bool = False) -> Any:
                 result = await session.call_tool(name, args)
@@ -145,9 +147,38 @@ async def run(db: Database, force: str) -> None:
                 )
             )[0]
             assert pm_consume['square_system']['roles']['item:nullius-box-limestone'] == 'consumed_input'
+            await plan_tools(call, force, plan_name)
+
+
+async def plan_tools(call: Any, force: str, name: str) -> None:
+    block = {'id': 'methanol', 'request': {'targets': {'nullius-methanol': 10}}}
+    saved = (await call('plan_save', {'name': name, 'blocks': [block], 'force': force}))[0]
+    assert saved['plan']['revision'] == 1 and saved['stale'] == 'fresh'
+    assert name in {p['name'] for p in await call('plan_list', {})}
+    await call('plan_save', {'name': '../escape', 'blocks': [block]}, error=True)
+    edit = {'op': 'set_target', 'block_id': 'methanol', 'item': 'nullius-methanol', 'value': 5}
+    edited = (await call('plan_edit', {'name': name, 'ops': [edit], 'expected_revision': 1}))[0]
+    assert edited['revision'] == 2
+    await call('plan_edit', {'name': name, 'ops': [edit], 'expected_revision': 1}, error=True)
+    solved = (await call('plan_solve', {'name': name}))[0]
+    assert solved['blocks'][0]['status'] == 'optimal' and solved['factory']['net_inputs']
+    pinned = (await call('plan_edit', {'name': name, 'ops': [{'op': 'pin', 'block_id': 'methanol'}]}))[0]
+    assert pinned['revision'] == 4
+    view = (await call('plan_get', {'name': name, 'include_results': False}))[0]
+    assert view['plan']['blocks'][0]['result'] is None and view['plan']['blocks'][0]['request']['lines']
+    await call('plan_delete', {'name': name, 'confirm': 'wrong'}, error=True)
+    deleted = (await call('plan_delete', {'name': name, 'confirm': name}))[0]
+    assert deleted['name'] == name
 
 
 @pytest.mark.realdata
 def test_stdio_tools(real_db: Database, force: str) -> None:
-    """All 14 tools over real stdio: pagination, force selection, locked-recipe/machine rejection, theory mode."""
-    asyncio.run(run(real_db, force))
+    """All 20 tools over real stdio: pagination, force selection, locked-recipe/machine rejection, theory mode,
+    and the plan tools against data/plans with a throwaway plan that is removed, trash included."""
+    name = f'mcp-test-{uuid.uuid4().hex[:8]}'
+    try:
+        asyncio.run(run(real_db, force, name))
+    finally:
+        (PLANS_DIR / f'{name}.json').unlink(missing_ok=True)
+        for leftover in (PLANS_DIR / '.trash').glob(f'{name}-*.json'):
+            leftover.unlink()

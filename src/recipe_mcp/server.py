@@ -1,5 +1,6 @@
 """MCP stdio server: recipe/technology/progress queries and production planning tools."""
 
+from pathlib import Path
 from typing import Literal
 
 import click
@@ -17,6 +18,7 @@ from .models import (
     TechnologyInfo,
     TechnologyPage,
 )
+from .paths import PLANS_DIR
 from .planner import machine_stats as planner_machine_stats
 from .planner import plan
 from .planner import production_matrix as planner_matrix
@@ -36,13 +38,17 @@ from .planner.schema import (
     SolverName,
     WeightName,
 )
+from .plans import PlanStore
+from .plans.factory import Detail, FactoryResult, solve_plan
+from .plans.models import BlockInput, EditOp, EditResult, PlanDeleted, PlanSummary, PlanView
 
 StateFilter = Literal['all', 'researched', 'researching', 'available_to_research', 'locked', 'disabled', 'unknown']
 
 
-def create_server(db: Database) -> FastMCP:
-    """Register every tool against one prototype/progress database."""
+def create_server(db: Database, plans_dir: Path = PLANS_DIR) -> FastMCP:
+    """Register every tool against one prototype/progress database and one plan folder."""
     mcp = FastMCP('factorio-recipes')
+    store = PlanStore(plans_dir, db)
 
     @mcp.tool()
     def search_recipes(
@@ -318,6 +324,58 @@ def create_server(db: Database) -> FastMCP:
         return planner_matrix(
             db, lines, targets, imports, surplus_items, defaults, force, validate_stage, consume=consume
         )
+
+    @mcp.tool()
+    def plan_list() -> list[PlanSummary]:
+        """Saved plans: name, description, block count, revision, update time and staleness against current data."""
+        return store.list()
+
+    @mcp.tool()
+    def plan_get(name: str, include_results: bool = True) -> PlanView:
+        """A saved plan with every block request and (unless include_results=false) each block's last result summary.
+        stale: fresh | stage_changed (save snapshot moved on) | prototypes_changed (mods changed) | unknown."""
+        return store.view(name, include_results)
+
+    @mcp.tool()
+    def plan_save(
+        name: str,
+        blocks: list[BlockInput],
+        description: str = '',
+        force: str = '',
+        per: Per = 'second',
+        overwrite: bool = False,
+    ) -> PlanView:
+        """Create a plan (or replace one with overwrite=true). name: 1-64 of A-Z a-z 0-9 _ . -.
+        Each block: {id, description?, enabled?, request}; request takes solve_production arguments except force and
+        per, which are plan-wide. A target may be a link {"from": [block ids] | "*", "plus": n}: the sum of what those
+        blocks import of that item. Blocks are checked like solve_production (without solving) before writing."""
+        return store.save(name, blocks, description, force, per, overwrite)
+
+    @mcp.tool()
+    def plan_edit(name: str, ops: list[EditOp], expected_revision: int | None = None) -> EditResult:
+        """Apply edit operations atomically (all or nothing) and bump the revision; a different expected_revision is a
+        conflict. ops: add_block, remove_block, rename_block (links follow), set_enabled, update_request (shallow merge,
+        null deletes), add_line / update_line / remove_line (by line id = id or recipe), set_target / remove_target,
+        set_limit / remove_limit (key power_MW, machines, beacons, pollution_per_minute, imports.<item>,
+        machines_by_type.<machine>, beacons_by_type.<beacon>, modules.<module>), set_consume / remove_consume,
+        pin (lines := last result's lines_for_matrix, optional solver), set_meta (description, force, per),
+        set_modules / set_beacons (a line id or "defaults"; null removes), replace_module (from, to, block_id?)."""
+        return store.edit(name, ops, expected_revision)
+
+    @mcp.tool()
+    def plan_solve(
+        name: str, blocks: list[str] = [], detail: Detail = 'summary', save_results: bool = True
+    ) -> FactoryResult:
+        """Solve enabled blocks (or the listed ones plus the blocks they link to) in dependency order and sum them:
+        net_inputs / net_outputs / internal_transfers per item on a shared-bus assumption, totals, beacons, modules,
+        and disposal for surplus no other block takes. A failing block is reported and the rest still solve.
+        detail="full" adds each block's full solve_production result. save_results writes the summaries back."""
+        return solve_plan(store, name, blocks, detail, save_results)
+
+    @mcp.tool()
+    def plan_delete(name: str, confirm: str) -> PlanDeleted:
+        """Move a plan to the trash folder (data/plans/.trash); confirm must equal the plan name."""
+        return PlanDeleted(name=name, trash_path=store.delete(name, confirm))
 
     return mcp
 

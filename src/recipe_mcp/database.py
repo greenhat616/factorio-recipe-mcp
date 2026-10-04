@@ -43,8 +43,17 @@ class Database:
                 if effect['type'] == 'unlock-recipe':
                     self.unlocks[effect['recipe']].append(name)
 
+    def _recipe(self, name: str) -> JSON:
+        if name not in self.recipes: raise ValueError(f'Unknown recipe: {name}')
+        return self.recipes[name]
+
+    def _technology(self, name: str) -> JSON:
+        technologies = self.raw.get('technology', {})
+        if name not in technologies: raise ValueError(f'Unknown technology: {name}')
+        return technologies[name]
+
     def recipe(self, name: str, force: str | None = None) -> JSON:
-        r = self.recipes[name]
+        r = self._recipe(name)
         keys = ['name', 'category', 'ingredients', 'results', 'allow_productivity', 'maximum_productivity',
                 'hidden', 'localised_name', 'surface_conditions', 'allow_quality']
         result = {k: r[k] for k in keys if k in r}
@@ -76,7 +85,7 @@ class Database:
                            'research_queue':f.get('research_queue',[])} for n,f in self.progress.get('forces',{}).items()]}
 
     def availability(self, name: str, force: str | None = None) -> JSON:
-        r = self.recipes[name]
+        r = self._recipe(name)
         if self.virtual(name): return {'state':'virtual','usable_at_stage':False,'scope':'research gate only'}
         if not self.progress_compatible:
             return {'state':'unknown','usable_at_stage':None,'reason':'No compatible save snapshot', 'scope':'research gate only'}
@@ -95,7 +104,7 @@ class Database:
                 'scope':'research gate only; machines, ingredients and surface conditions are separate'}
 
     def technology(self, name: str, force: str | None = None) -> JSON:
-        t = self.raw['technology'][name]
+        t = self._technology(name)
         selected = self.force_name(force) if self.progress_compatible else None
         f = self.progress['forces'][selected] if selected else {}
         runtime = f.get('technologies',{}).get(name)
@@ -147,11 +156,11 @@ class Database:
                 'scope':'research gates only; does not prove ingredient supply, compatible machines or surface conditions'}
 
     def virtual(self, name: str) -> bool:
-        r = self.recipes[name]
+        r = self._recipe(name)
         return r.get('category', '').startswith(('transport-drone-', 'transport-fluid-', 'transport-item-')) or name.startswith(('creative-mod', 'nullius-creative', 'request-'))
 
     def machines(self, recipe: str, force: str | None = None) -> list[JSON]:
-        category = self.recipes[recipe].get('category', 'crafting')
+        category = self._recipe(recipe).get('category', 'crafting')
         result = []
         for kind in ['assembling-machine', 'furnace', 'rocket-silo', 'character']:
             for name, m in self.raw.get(kind, {}).items():
@@ -168,7 +177,7 @@ class Database:
         def visit(n: str) -> None:
             if n in seen: return
             seen.add(n)
-            t = self.raw['technology'][n]
+            t = self._technology(n)
             for i in t.get('unit', {}).get('ingredients', []): packs.add(i[0] if isinstance(i, list) else i['name'])
             for p in t.get('prerequisites', []): visit(p)
         visit(technology)
@@ -182,5 +191,5 @@ class Database:
         result: defaultdict[str, float] = defaultdict(float)
         for name, rate in rates.items():
             for key, sign in [('ingredients', -1), ('results', 1)]:
-                for e in self.recipes[name].get(key, []): result[e['type'] + ':' + e['name']] += sign * amount(e) * rate
+                for e in self._recipe(name).get(key, []): result[e['type'] + ':' + e['name']] += sign * amount(e) * rate
         return {n: v for n, v in sorted(result.items()) if abs(v) > 1e-9}

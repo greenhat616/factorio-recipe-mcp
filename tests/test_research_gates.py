@@ -3,6 +3,8 @@ import hashlib
 import json
 from pathlib import Path
 
+import pytest
+
 from recipe_mcp.database import JSON, Database
 
 
@@ -28,3 +30,13 @@ def test_gate_semantics(tmp_path: Path) -> None:
     assert Database(path=p,progress={}).availability('locked')['usable_at_stage'] is None
     snapshot['provenance']['prototype_raw_sha256']='bad'
     assert Database(path=p,progress=snapshot).availability('locked')['state']=='unknown'
+
+
+def test_unknown_names_raise_value_error() -> None:
+    # MCP clients only see the exception text; a bare KeyError reads as "'name'".
+    db = Database(raw={'recipe': {}, 'technology': {}}, progress={})
+    for call, label in [(lambda: db.recipe('nope'), 'recipe'), (lambda: db.balance({'nope': 1}), 'recipe'),
+                        (lambda: db.machines('nope'), 'recipe'), (lambda: db.technology('nope'), 'technology'),
+                        (lambda: db.science('nope'), 'technology')]:
+        with pytest.raises(ValueError, match=f'Unknown {label}: nope'):
+            call()

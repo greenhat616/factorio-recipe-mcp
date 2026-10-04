@@ -11,11 +11,11 @@ src/recipe_mcp/
 ├── server.py            MCP 工具层（参数 → 调用，不含业务逻辑）
 ├── paths.py             新增 PLANS_DIR = DATA_DIR / 'plans'
 ├── planner/
-│   ├── model.py         产线模型 Planner.line()、自动发现（不变）
+│   ├── model.py         产线模型 Planner.line()、自动发现（【小改】信标干扰档位、allowed_module_categories、每台插件/信标计数，见 §5）
 │   ├── lp.py            【扩展】LPBuilder、目标/最大化两阶段、约束、对偶值→瓶颈、弹性诊断、MILP
 │   ├── matrix.py        【扩展】consume 支持
 │   ├── disposal.py      【新】副产物处置核算
-│   ├── report.py        【扩展】limits_usage / bottlenecks / disposal 字段
+│   ├── report.py        【扩展】limits_usage / bottlenecks / disposal / 信标台数 / 插件清单字段
 │   └── api.py           【扩展】plan() 新参数与模式分派
 └── plans/               【新】
     ├── store.py         PlanStore：存储、校验、原子写、修订号、指纹、回收站
@@ -25,14 +25,14 @@ src/recipe_mcp/
 
 原则：
 
-- `Planner.line()` 的产线模型不变；新功能都在"由产线构建优化问题"和"由结果做后处理"两层实现。
+- `Planner.line()` 的效果计算不变，只增加计数字段与干扰档位解析（§5）；新功能都在"由产线构建优化问题"和"由结果做后处理"两层实现。插件与信标对优化问题的全部影响都经由产线系数（a_kl、cpm_l、P_l、pol_l 与 §5 的计数系数）进入，LP 中没有插件或信标专用变量。
 - `plan()` 保持现有签名与默认值，新参数全部有默认值，默认行为等同于现状（NFR-1）。
 - `plans/` 只通过 `plan()` 求解，不直接接触 LP，保证单块求解与方案内求解结果一致。
 
 ## 2. 单位与内部表示
 
 - 内部一律为"每秒"。用户输入的 `targets`、`consume`、`limits.imports` 按 `per` 除以因子换算；输出乘回因子。
-- `limits.power_MW`（MW）、`limits.machines` / `machines_by_type`（台）、`limits.pollution_per_minute`（每分钟）与 `per` 无关。
+- `limits.power_MW`（MW）、`limits.machines` / `machines_by_type` / `beacons` / `beacons_by_type`（台）、`limits.modules`（个）、`limits.pollution_per_minute`（每分钟）与 `per` 无关。
 - 最大化模式中 `targets` 的值是比例 r_k（无量纲，仍按 `per` 解读）；结果中的 `scale` 无量纲，实际产出 = `scale × r_k`（按 `per`）。
 - 物品键沿用 `type:name`。
 
@@ -72,9 +72,14 @@ src/recipe_mcp/
 | `machines` | Σ_l x_l / cpm_l ≤ M |
 | `machines_by_type[e]` | Σ_{l: machine_l=e} x_l / cpm_l ≤ M_e |
 | `pollution_per_minute` | Σ_l x_l · pol_l / cpm_l ≤ Q |
+| `beacons` | Σ_l x_l · B_l / cpm_l ≤ N，B_l = Σ 该产线信标的 `per_machine` |
+| `beacons_by_type[b]` | Σ_l x_l · B_l,b / cpm_l ≤ N_b，B_l,b = 该产线基础物品为 b 的信标 `per_machine` 之和 |
+| `modules[j]` | Σ_l x_l · U_l,j / cpm_l ≤ K_j，U_l,j = 每台机器分摊的插件 j 数量（§5.2） |
 | `imports[k]` | 作为 m_k 的变量上界（不单独建行） |
 
-整数模式下，上面三类机器/电力/污染行中的 x_l / cpm_l 换成 n_l，并增加耦合行 x_l − cpm_l · n_l ≤ 0。
+`machines` / `machines_by_type` 只统计产线机器，不含信标与处置设备。P_l 已含信标耗电，信标没有单独的电力行。
+
+整数模式下，上面机器/电力/污染/信标/插件行中的 x_l / cpm_l 换成 n_l，并增加耦合行 x_l − cpm_l · n_l ≤ 0。
 
 ### 3.4 目标函数与两阶段
 
@@ -148,34 +153,99 @@ min Σσ/|L| + Σδ/t + Σγ/κ。产线的 `fixed_machines` 保持硬约束（�
 - `disposal.py` 在首次使用时由 `Planner` 的配方表建索引 `void_by_key`：配方满足"恰好一个投入 k，且所有产出的期望量为 0（或无产出）"、非虚拟。Nullius 的销毁配方是 `nullius-gas-void` / `nullius-liquid-void` 两类，共 42 个，产出为 probability 0 的占位物品，可被此规则识别。
 - 对每个溢出量 > 1e-9 的物品：候选销毁配方须当前阶段可用（`validate_stage` 时）；机器按 `disposal_defaults.machine_preference`（默认 **`efficient`**）选择。例如 Nullius 中 `efficient` 会选零耗电的烟囱 2（速度 5），而不选需 295 kW 的烟囱 3；`fastest` 会选烟囱 3。
 - 台数 = 溢出量 / (每次投入量 × cpm)。有多个可用销毁配方时选台数最少的那个。
+- 处置设备的插件 / 信标取自 `disposal_defaults.modules` / `beacons`（同 `Defaults` 格式，默认为空即不装）；其信标台数与插件计入 `disposal_totals` 与 `module_inventory`。
 - 输出 `disposal`、`disposal_totals`、`totals_with_disposal`、`disposal_unhandled`。完全是后处理，不进入 LP。
 
-## 5. `solve_production` 接口变化
+## 5. 插件与信标（planner/model.py、planner/report.py）
+
+### 5.1 沿用的效果模型
+
+以下已在 `Planner.line()` 实现，本期不改：
+
+- 机器槽插件效果在 `effect_receiver.uses_module_effects` 时累加；信标插件效果 × `distribution_effectivity` × `profile[n]` × `count`（n 按 `beacon_counter` 取同类或全部信标数），在 `uses_beacon_effects` 时累加；再加 `base_effect` 与研究产能。
+- 速度、能耗、污染系数下限 0.2；产能限制在 [0, `maximum_productivity`]，且仅 `allow_productivity` 的配方生效。
+- 信标耗电 `beacon_W` = Σ `per_machine` × 信标 `energy_usage`，计入 `power_W`（燃料机器也计）。
+
+因此 a_kl、cpm_l、P_l、pol_l 已是插件修正后的值，§3 的各模式、§4 的处置核算、§3.6 的诊断自动获得插件与信标的影响（US-C1）。
+
+### 5.2 产线计数字段
+
+`Line` 新增（每台机器分摊量）：
+
+| 字段 | 定义 |
+|---|---|
+| `beacon_items: dict[str, float]` | 基础信标物品 → Σ 该类信标的 `per_machine` |
+| `module_counts: dict[str, float]` | 插件 → 机器槽内个数 + Σ_信标 `per_machine` × 该信标内个数 |
+
+B_l = Σ `beacon_items`，U_l,j = `module_counts[j]`，供 §3.3 约束行与报告使用。信标插件按**实体数**（`per_machine`）计，不按作用数（`count`）计：共享信标的插件只放一次。
+
+### 5.3 干扰档位（Nullius）
+
+- `BeaconSpec` 新增 `interference: int = 0`（0–4）。`BeaconRow` 新增 `entity`（实际使用的原型名）、`item`（基础物品）、`interference`；原有 `beacon` 字段保持为调用方所写的名称（G6）。
+- 解析：基础物品 = 原型的 `placeable_by.item`，缺省为原型名本身。k ≥ 1 时查找名为 `<基础信标>-<k>` 且 `placeable_by.item` 等于基础物品的信标原型；找不到 → `ValueError("<beacon> has no interference variant <k>")`。直接写变体名时 `interference` 从后缀推出，与显式给出的值冲突则报错。
+- 效果系数与耗电取变体原型（已验证 Nullius 数据：`nullius-beacon-2` 的 1–4 档系数为 0.36 / 0.32 / 0.24 / 0.12，耗电 150 / 150 / 120 / 75 kW）。
+- 阶段校验：`Database.machine_stage()` 已经按 `placeable_by` 映射到基础物品，变体可直接校验。
+- `pin()` 原样回写 `beacon` 与 `interference`，保证往返一致。
+
+### 5.4 插件规则补充
+
+`module_problems()` 增加：实体（机器或信标）声明了 `allowed_module_categories` 时，插件的 `category` 必须在其中。当前 Nullius 数据中没有实体声明该字段，此检查只对其他模组组合生效。
+
+### 5.5 报告字段（只增不改）
+
+| 位置 | 字段 | 公式 |
+|---|---|---|
+| `PlanLine` | `beacon_count` | machines × B_l |
+| `PlanLine` | `beacon_count_ceil` | ⌈machines_ceil × B_l − 1e-6⌉ |
+| `PlanLine` | `beacon_power_MW` | machines × `beacon_W` / 1e6 |
+| `Totals` | `beacon_count`、`beacon_count_ceil`、`beacon_power_MW` | 各产线求和 |
+| `Totals` | `beacon_count_by_type` | 按基础物品求和 |
+| `PlanResult` | `module_inventory: {插件: {count, count_ceil}}` | count = Σ machines × U_l,j；count_ceil = Σ_l (machines_ceil × 机器槽个数 + Σ_信标 ⌈machines_ceil × per_machine⌉ × 信标内个数) |
+| `MachineStats` | `beacon_items`、`module_counts` | 每台机器分摊量（§5.2） |
+
+### 5.6 约束键校验
+
+- `limits.beacons_by_type` 的键可写信标实体名（含变体）或物品名，统一归一到基础物品；无法识别 → `ValueError`。
+- `limits.modules` 的键必须是 `module` 原型；否则 `ValueError`。
+- 约束中出现但没有任何产线使用的信标 / 插件：不报错，`limits_usage` 中 `used = 0`。
+
+### 5.7 预留接口
+
+| 预留项 | 本期行为 | 实现时的约定 |
+|---|---|---|
+| `Defaults.module_options: list[{name, modules, beacons}] \| None` | 非 `None` → `ValueError("module_options is reserved and not implemented yet")` | 每个未显式指定插件的候选配方，按每个选项各生成一条产线，id 为 `<配方>@<name>`；不兼容的选项跳过而非报错；与 `limits.modules` 共同构成插件分配问题，不新增 LP 变量 |
+| `weights.beacons`、`weights.modules` | 非 0 → `ValueError`（未实现） | 成本项 c_l += (w_beacons · B_l + w_modules · Σ_j U_l,j) / cpm_l，默认 0 |
+| `quality` 效果 | 累加但不使用 | 品质建模另立需求 |
+| `per_machine` 布局预设 | 不提供 | 以 `beacon_layout` 名称填充 `per_machine`，核算公式不变 |
+
+## 6. `solve_production` 接口变化
 
 新增参数（均有默认值）：
 
 | 参数 | 类型 | 默认 | 说明 |
 |---|---|---|---|
 | `mode` | `"targets" \| "maximize"` | `"targets"` | 最大化时 `targets` 为比例 |
-| `limits` | dict | `{}` | `{imports:{物品:速率}, power_MW, machines, machines_by_type:{机器:台}, pollution_per_minute}` |
+| `limits` | dict | `{}` | `{imports:{物品:速率}, power_MW, machines, machines_by_type:{机器:台}, beacons, beacons_by_type:{信标:台}, modules:{插件:个}, pollution_per_minute}` |
 | `consume` | dict[str,float] | `{}` | 必须完全消耗的外部输入 |
 | `disposal` | `"report" \| "none"` | `"report"` | 副产物处置核算 |
-| `disposal_defaults` | dict | `{}` | 处置设备选择，同 `defaults` 格式 |
+| `disposal_defaults` | dict | `{}` | 处置设备选择，同 `defaults` 格式（含 `modules` / `beacons`） |
 | `integer_machines` | bool | `false` | P2 |
 | `time_limit` | float | `10` | 整数模式时限（秒） |
 
-新增返回字段（只增不改）：`status`、`mode`、`scale`、`achieved_targets`、`limits_usage`、`bottlenecks`、`infeasibility`、`suggestions`、`disposal*`、`mip_gap`。`limits` 中未知键报错，避免拼写错误被静默忽略。
+新增返回字段（只增不改）：`status`、`mode`、`scale`、`achieved_targets`、`limits_usage`、`bottlenecks`、`infeasibility`、`suggestions`、`disposal*`、`mip_gap`、`module_inventory`，以及 §5.5 中产线与 `totals` 的信标字段。`limits` 中未知键报错，避免拼写错误被静默忽略。
 
-## 6. 方案管理（plans/）
+产线与 `defaults` 中的 `beacons[]` 接受新键 `interference`（§5.3）。`machine_stats` 的 `beacons` 参数同样接受。
 
-### 6.1 存储
+## 7. 方案管理（plans/）
+
+### 7.1 存储
 
 - 根目录 `paths.PLANS_DIR`（即 `data/plans/`；可注入，测试用 `tmp_path`）；回收站 `data/plans/.trash/`。
 - 名称正则 `^[A-Za-z0-9_.-]{1,64}$`，且不等于 `.`、`..`；路径解析后必须位于根目录内（`Path.resolve()` 前缀检查）。
 - 写盘：序列化 → 检查 ≤ 1 MB → 写 `<name>.json.tmp-<pid>` → `os.replace`。
 - 读盘：JSON 解析失败 → 报错并指出文件，不改动原文件。
 
-### 6.2 文件格式（schema 1）
+### 7.2 文件格式（schema 1）
 
 ```json
 {
@@ -197,7 +267,9 @@ min Σσ/|L| + Σδ/t + Σγ/κ。产线的 `fixed_machines` 保持硬约束（�
       "result": {
         "solved_at": "…", "fingerprint": {"…": "…"}, "status": "optimal", "solver": "lp",
         "targets": {}, "resolved_targets": {}, "totals": {}, "imports": {}, "surplus": {}, "consume": {},
-        "disposal_totals": {}, "lines": [{"id": "", "recipe": "", "machine": "", "modules": [], "machines": 0, "machines_ceil": 0}],
+        "disposal_totals": {}, "module_inventory": {},
+        "lines": [{"id": "", "recipe": "", "machine": "", "modules": [], "beacons": [], "machines": 0, "machines_ceil": 0,
+                   "beacon_count": 0, "beacon_count_ceil": 0}],
         "lines_for_matrix": [], "matrix_args": {}, "warnings": []
       }
     }
@@ -206,10 +278,10 @@ min Σσ/|L| + Σδ/t + Σγ/κ。产线的 `fixed_machines` 保持硬约束（�
 ```
 
 - `request` 的键白名单 = `solve_production` 的参数 − {`force`, `per`}（这两项取方案级设置）。未知键报错。
-- 目标值允许数字或引用对象（见 6.5）；引用只在方案内有效，直接调用 `solve_production` 时不允许。
+- 目标值允许数字或引用对象（见 7.5）；引用只在方案内有效，直接调用 `solve_production` 时不允许。
 - `result` 只保存摘要（够用于汇总、对比、固定路线），完整结果每次求解时重新生成，避免文件膨胀。
 
-### 6.3 过期检测
+### 7.3 过期检测
 
 `fingerprint` 取自当前 `Database`：`raw_sha256`、`progress['tick']`、`provenance.source_copy_sha256`。
 
@@ -221,7 +293,7 @@ min Σσ/|L| + Σδ/t + Σγ/κ。产线的 `fixed_machines` 保持硬约束（�
 
 方案级与块结果级分别比较。过期只产生警告，不阻止求解；重新求解并保存后刷新指纹。
 
-### 6.4 编辑操作（`plan_edit`）
+### 7.4 编辑操作（`plan_edit`）
 
 在内存副本上依次执行，全部成功并通过校验（每个启用块执行一次 `build_lines` 级的参数与产线构建检查，不求解）后才写盘。
 
@@ -238,12 +310,15 @@ min Σσ/|L| + Σδ/t + Σγ/κ。产线的 `fixed_machines` 保持硬约束（�
 | `set_target` / `remove_target` | `block_id`, `item`, `value` | value 可为数字或引用 |
 | `set_limit` / `remove_limit` | `block_id`, `key`, `value` | key 形如 `power_MW`、`imports.<item>`、`machines_by_type.<machine>` |
 | `set_consume` / `remove_consume` | `block_id`, `item`, `value` | |
-| `pin` | `block_id`, `solver?` | 用 `result.lines_for_matrix` 替换 `lines`，`matrix_args` 合并进请求，`auto_discover=false`；可选切换 `solver` |
+| `pin` | `block_id`, `solver?` | 用 `result.lines_for_matrix` 替换 `lines`，`matrix_args` 合并进请求，`auto_discover=false`；可选切换 `solver`。产线上的插件与信标（含 `interference`）原样保留 |
+| `set_modules` | `block_id`, `line_id` 或 `"defaults"`, `modules` | 设置产线的 `modules`，或块请求 `defaults.modules`（优先级列表）；`null` 删除该键（恢复默认填充） |
+| `set_beacons` | `block_id`, `line_id` 或 `"defaults"`, `beacons` | 同上，作用于 `beacons` / `defaults.beacons` |
+| `replace_module` | `from`, `to`, `block_id?`（缺省为全部块） | 替换产线 `modules`、各信标 `modules`、`defaults.modules` 中的插件名；返回每块改动的产线数，0 时给警告 |
 | `set_meta` | `description?`, `force?`, `per?` | 修改 `per` 不自动换算已存数值，返回警告 |
 
 `expected_revision` 不符 → 冲突错误，返回当前修订号。
 
-### 6.5 工厂求解与块间联动（`plan_solve`）
+### 7.5 工厂求解与块间联动（`plan_solve`）
 
 1. 选出要求解的块（参数 `blocks` 为空 → 全部启用块）。被引用但未选中的块也会加入（依赖闭包）。
 2. 依赖图：目标值为 `{"from": [ids]}` → 依赖这些块；`{"from": "*"}` → 依赖其他全部启用块。Kahn 拓扑排序；有环 → 报错，并用 DFS 给出环路径。
@@ -261,7 +336,7 @@ dispose_k  = max(0, Σ_b surplus_b,k − in_k)   # 内部需求优先消化副�
 ```
 
 6. 工厂处置：对 dispose_k > 0 的物品重新运行处置核算，替代各块独立处置结果的简单相加。
-7. 汇总机器数、电力、污染（各块 `totals` 相加）+ 工厂处置设备。
+7. 汇总机器数、电力、污染、信标台数（含 `beacon_count_by_type`）、`module_inventory`（各块相加）+ 工厂处置设备。
 8. 假设声明（写入返回的 `assumptions` 字段）：共享总线、不建模物流与缓冲、按块独立选路线。
 9. `save_results=true` 时写回各块 `result` 和方案指纹（修订号 +1）。
 
@@ -276,7 +351,7 @@ dispose_k  = max(0, Σ_b surplus_b,k − in_k)   # 内部需求优先消化副�
 
 `detail="full"` 时每块附完整 `plan()` 结果。
 
-### 6.6 MCP 工具
+### 7.6 MCP 工具
 
 | 工具 | 签名（摘要） | 优先级 |
 |---|---|---|
@@ -290,23 +365,23 @@ dispose_k  = max(0, Σ_b surplus_b,k − in_k)   # 内部需求优先消化副�
 
 工具总数 14 → 20（P2 完成后 21），`tests/test_mcp_stdio.py` 中的工具数断言同步修改。
 
-## 7. 错误处理约定
+## 8. 错误处理约定
 
 - 参数错误、阶段锁定、矩阵欠定或矛盾：继续抛 `ValueError`（MCP 返回 isError + 文本）。
 - 有约束或消耗时的不可行：返回结构化结果 `status:"infeasible"`，便于调用方读取缺口。
 - 方案冲突：`ValueError("Revision conflict: expected 3, current 4")`。
 - 所有错误信息给出下一步建议（NFR-5）。
 
-## 8. 测试策略
+## 9. 测试策略
 
 | 层 | 文件 | 内容 |
 |---|---|---|
-| 合成数学 | `tests/test_planner_synthetic.py`（扩展） | 用现有类重油裂解夹具做闭式校验：原油上限 100/s → 石油气 97.5/s；电力上限；按机器类型的上限；矩阵模式消耗 100 原油 → 97.5；不可行诊断的缺口数值；处置核算（合成销毁配方）；整数模式小例子 |
-| 方案 | `tests/test_plans.py`（新） | 临时根目录：名称校验/路径穿越、原子编辑回滚、修订冲突、pin 前后一致、联动拓扑与环检测、账本数值、过期标记、回收站 |
-| 真实数据 | `tests/test_planner_real.py` / `tests/test_plans.py`（`realdata` 标记） | 甲醇：石灰石上限下最大化 + 瓶颈；消耗压缩氧气；两块方案（甲醇块 + 引用甲醇的下游块）汇总 |
+| 合成数学 | `tests/test_planner_synthetic.py`（扩展） | 用现有类重油裂解夹具做闭式校验：原油上限 100/s → 石油气 97.5/s；电力上限；按机器类型的上限；矩阵模式消耗 100 原油 → 97.5；不可行诊断的缺口数值；处置核算（合成销毁配方）；整数模式小例子；信标台数与插件清单闭式值、`limits.modules` 分配（US-C3.4）、`allowed_module_categories` 拒绝、预留字段报"未实现" |
+| 方案 | `tests/test_plans.py`（新） | 临时根目录：名称校验/路径穿越、原子编辑回滚、修订冲突、pin 前后一致、联动拓扑与环检测、账本数值、过期标记、回收站、`replace_module` / `set_modules` / `set_beacons` 及其失败回滚 |
+| 真实数据 | `tests/test_planner_real.py` / `tests/test_plans.py`（`realdata` 标记） | 甲醇：石灰石上限下最大化 + 瓶颈；消耗压缩氧气；两块方案（甲醇块 + 引用甲醇的下游块）汇总；Nullius 信标干扰档位系数与耗电（US-C4.5） |
 | stdio | `tests/test_mcp_stdio.py` | 工具数 20；每个新工具至少调用一次；错误路径（冲突、非法名称）返回 isError |
 
-## 9. 风险与应对
+## 10. 风险与应对
 
 | 风险 | 应对 |
 |---|---|
@@ -315,4 +390,6 @@ dispose_k  = max(0, Σ_b surplus_b,k − in_k)   # 内部需求优先消化副�
 | 弹性诊断给出组合解而非单项上限 | 字段说明 + 建议改用 `mode=maximize` 探索单项 |
 | 方案文件被外部工具改坏 | 解析失败不覆盖；schema 版本校验；未知键报错 |
 | 引用 `*` 容易形成环 | 环检测给出路径；文档建议优先显式列出块 id |
+| 插件清单的取整口径与实际摆放不符（信标共享） | 小数口径用于约束，取整口径只报告；`per_machine` 由调用方按布局给出，文档写明 |
+| 干扰变体按名称后缀查找，换模组后规则失效 | 查找同时要求 `placeable_by.item` 一致；找不到时报错而不是静默回退到无干扰 |
 | 单个模块继续膨胀 | 按组件落在 `planner/` 与 `plans/` 子模块，新增功能不往 `model.py` 里堆 |

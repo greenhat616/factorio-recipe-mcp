@@ -354,3 +354,37 @@ def test_tight_limit_in_targets_mode_reports_marginal_cost(db: Database) -> None
     (b,) = r.bottlenecks
     # One more plate moves one gear from gear-b (4 machines + 0.01) to gear-a (1 machine + 0.02).
     assert b.constraint == 'import:item:plate' and b.used == approx(1.5, 1e-7) and b.marginal == approx(2.99, 1e-7)
+
+
+def test_consume_with_maximize(db: Database) -> None:
+    r = plan(db, {'petro': 1}, OIL, mode='maximize', consume={'crude': 100}, validate_stage=False)
+    assert r.scale == approx(97.5, 1e-7) and 'fluid:crude' not in r.imports
+    crude = next(i for i in r.items if i.item == 'fluid:crude')
+    assert crude.supplied == approx(100) and crude.consumed == approx(100, 1e-7) and crude.surplus == 0
+    assert r.consume == {'fluid:crude': 100}
+
+
+def test_consume_without_targets_in_lp(db: Database) -> None:
+    r = plan(db, {}, OIL, consume={'crude': 100}, validate_stage=False)
+    assert by_recipe(r)['aop'] == approx(1, 1e-7) and r.max_balance_error < 1e-9
+
+
+def test_consume_rejections(db: Database) -> None:
+    with pytest.raises(ValueError, match='both a target and consumed'):
+        plan(db, {'petro': 1}, OIL, consume={'petro': 1}, validate_stage=False)
+    with pytest.raises(ValueError, match='Auto-discovery'):
+        plan(db, {}, consume={'crude': 100}, validate_stage=False)
+    with pytest.raises(ValueError, match='import-capped'):
+        plan(db, {'petro': 1}, OIL, consume={'crude': 1}, limits={'imports': {'crude': 1}}, validate_stage=False)
+    with pytest.raises(ValueError, match='Nothing sets the scale'):
+        plan(db, {}, OIL, solver='matrix', validate_stage=False)
+    with pytest.raises(ValueError, match='positive'):
+        plan(db, {'petro': 1}, OIL, consume={'crude': 0}, validate_stage=False)
+
+
+def test_matrix_consume_is_helmod_input_mode(db: Database) -> None:
+    r = plan(db, {}, OIL, solver='matrix', consume={'crude': 100}, validate_stage=False)
+    assert r.surplus['fluid:petro'] == approx(97.5) and r.max_balance_error < 1e-9
+    assert r.matrix is not None and r.matrix.roles['fluid:crude'] == 'consumed_input'
+    pm = production_matrix(db, OIL, consume={'crude': 100})
+    assert pm.square_system.roles['fluid:crude'] == 'consumed_input' and pm.square_system.degrees_of_freedom == 0

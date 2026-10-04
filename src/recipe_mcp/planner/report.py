@@ -15,6 +15,7 @@ def report(
     targets: Mapping[str, float],
     factor: float,
     prices_limit: int = 40,
+    consume: Mapping[str, float] | None = None,
 ) -> Report:
     flows: defaultdict[str, ItemFlow] = defaultdict(lambda: ItemFlow(item=''))
     rows: list[PlanLine] = []
@@ -61,10 +62,12 @@ def report(
         flows[k].imported = v
     for k, v in solution.surplus.items():
         flows[k].surplus = v
+    for k, v in (consume or {}).items():
+        flows[k].supplied = v
     items: list[ItemFlow] = []
     for k in sorted(flows):
         f = flows[k]
-        if max(abs(f.produced), abs(f.consumed), abs(f.imported), abs(f.surplus)) < EPS:
+        if max(abs(f.produced), abs(f.consumed), abs(f.imported), abs(f.surplus), abs(f.supplied)) < EPS:
             continue
         items.append(
             ItemFlow(
@@ -72,6 +75,7 @@ def report(
                 produced=f.produced * factor,
                 consumed=f.consumed * factor,
                 imported=f.imported * factor,
+                supplied=f.supplied * factor,
                 surplus=f.surplus * factor,
                 target=targets.get(k, 0) * factor,
             )

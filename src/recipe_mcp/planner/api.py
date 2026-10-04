@@ -60,6 +60,7 @@ def plan(
     validate_stage: bool = True,
     mode: Mode = 'targets',
     limits: Limits | Mapping[str, Any] | None = None,
+    consume: Mapping[str, float] | None = None,
 ) -> PlanResult:
     factor = TIME[per]
     lim = limits if isinstance(limits, Limits) else Limits.model_validate(limits or {})
@@ -71,8 +72,16 @@ def plan(
         if not math.isfinite(rate) or rate < 0:
             raise ValueError('Target rates must be finite and nonnegative')
         tgt[p.key(name)] = rate / factor
-    if not tgt:
-        raise ValueError('At least one target is required')
+    supply: dict[str, float] = {}
+    for name, rate in (consume or {}).items():
+        if not math.isfinite(rate) or rate <= 0:
+            raise ValueError(f'consume rates must be finite and positive; got {name}={rate}')
+        key = p.key(name)
+        if key in tgt:
+            raise ValueError(f'{key} is both a target and consumed; an item is either produced or supplied')
+        supply[key] = rate / factor
+    if not tgt and mode == 'maximize':
+        raise ValueError('mode=maximize needs ratio targets to scale')
     constrained = lim != Limits()
     if solver == 'matrix' and (mode == 'maximize' or constrained):
         raise ValueError('mode=maximize and limits need the lp solver; use solver="lp"')
@@ -81,6 +90,11 @@ def plan(
     surplus = {p.key(n) for n in surplus_items}
     costs = {p.key(k): v for k, v in (import_costs or {}).items()}
     auto = (not lines) if auto_discover is None else auto_discover
+    if auto and not tgt:
+        raise ValueError(
+            'Auto-discovery searches upstream from targets and there are none: pass lines that use the consumed '
+            'items, or give ratio targets with mode=maximize.'
+        )
     if solver == 'matrix' and auto and not lines:
         raise ValueError(
             'The matrix solver needs one chosen recipe per intermediate: pass lines (e.g. from an lp result) '
@@ -91,7 +105,8 @@ def plan(
         tgt,
         defaults or Defaults(),
         auto,
-        import_keys,
+        # Consumed items are supplied, so their producers are not searched for.
+        import_keys | set(supply),
         set(exclude_recipes),
         max(1, min(max_depth, 30)),
         max(1, min(max_lines, 2000)),
@@ -100,14 +115,16 @@ def plan(
     )
     if not rows:
         raise ValueError('No usable production lines for the targets')
+    if not tgt and not supply and all(r.fixed_machines is None for r in rows):
+        raise ValueError('Nothing sets the scale: give targets, consume or a line with fixed_machines')
     if solver == 'lp':
         w = Weights.model_validate({**OBJECTIVES[objective].model_dump(), **(weights or {})})
         limit_list = limit_rows(p, rows, lim, factor)
-        sol = solve_lp(rows, tgt, import_keys, forbid, costs, allow_surplus, surplus, w, mode, limit_list)
+        sol = solve_lp(rows, tgt, import_keys, forbid, costs, allow_surplus, surplus, w, mode, limit_list, supply)
     else:
-        sol = solve_matrix(rows, tgt, import_keys, surplus, p.warnings)
+        sol = solve_matrix(rows, tgt, import_keys, surplus, p.warnings, supply)
     achieved = {k: v * sol.scale for k, v in tgt.items()} if sol.scale is not None else tgt
-    out = report(p, rows, sol, achieved, factor)
+    out = report(p, rows, sol, achieved, factor, consume=supply)
     out.warnings += sol.warnings
     usage, bottlenecks = usage_report(sol.constraints, mode, factor, per)
     if frontier:
@@ -134,6 +151,7 @@ def plan(
         targets={k: v * factor for k, v in tgt.items()},
         scale=sol.scale,
         achieved_targets={k: v * factor for k, v in achieved.items()},
+        consume={k: v * factor for k, v in supply.items()},
         limits_usage=usage,
         bottlenecks=bottlenecks,
         candidate_lines=len(rows),
@@ -223,13 +241,15 @@ def production_matrix(
     force: str = '',
     validate_stage: bool = False,
     dense_limit: int = 60,
+    consume: Mapping[str, float] | None = None,
 ) -> ProductionMatrix:
     """Stoichiometric matrix (items x lines), rank and Factory Planner style determinacy report."""
     p = Planner(db, force, validate_stage)
     rows = [p.line(s, defaults) for s in lines]
     tgt = {p.key(k): v for k, v in (targets or {}).items()}
     keys, A = recipe_matrix(rows)
-    *_, info, _ = analyze_matrix(rows, tgt, {p.key(n) for n in imports}, {p.key(n) for n in surplus_items})
+    supply = {p.key(k): v for k, v in (consume or {}).items()}
+    *_, info, _ = analyze_matrix(rows, tgt, {p.key(n) for n in imports}, {p.key(n) for n in surplus_items}, supply)
     out = ProductionMatrix(
         lines=[r.id for r in rows],
         items=keys,

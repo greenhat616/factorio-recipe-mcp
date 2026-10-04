@@ -127,6 +127,16 @@ async def run(db: Database, force: str) -> None:
                 )
             )[0]
             assert pm['square_system']['items'] == len(pm['items'])
+            pm_consume = (
+                await call(
+                    'production_matrix',
+                    {
+                        'lines': [line['recipe'] for line in lp['lines_for_matrix']],
+                        'consume': {'nullius-box-limestone': 1},
+                    },
+                )
+            )[0]
+            assert pm_consume['square_system']['roles']['item:nullius-box-limestone'] == 'consumed_input'
 
 
 @pytest.mark.realdata

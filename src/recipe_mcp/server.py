@@ -201,6 +201,7 @@ def create_server(db: Database) -> FastMCP:
         validate_stage: bool = True,
         mode: Mode = 'targets',
         limits: Limits | None = None,
+        consume: dict[str, float] = {},
     ) -> PlanResult:
         """Helmod/Factory Planner style rate calculator: machine counts, modules/beacons, power, imports, byproducts.
 
@@ -217,6 +218,8 @@ def create_server(db: Database) -> FastMCP:
         limits (lp only): {imports: {item: rate per `per`}, power_MW, machines, machines_by_type: {machine: count},
                 pollution_per_minute}. Capped imports are allowed even when the item has a producing line.
                 Returns limits_usage for every limit and bottlenecks for binding ones with their marginal value.
+        consume: {material: rate per `per`} supplied externally and used up exactly (Helmod input mode); never
+                imported or left as surplus. With the matrix solver targets may be empty: outputs become byproducts.
         Stage-locked recipes/machines/modules are rejected unless validate_stage=false.
         Feed result.lines_for_matrix back as `lines` (with result.matrix_args for the matrix solver) to pin a plan."""
         return plan(
@@ -245,6 +248,7 @@ def create_server(db: Database) -> FastMCP:
             validate_stage=validate_stage,
             mode=mode,
             limits=limits,
+            consume=consume,
         )
 
     @mcp.tool()
@@ -289,10 +293,13 @@ def create_server(db: Database) -> FastMCP:
         defaults: Defaults | None = None,
         force: str = '',
         validate_stage: bool = False,
+        consume: dict[str, float] = {},
     ) -> ProductionMatrix:
         """Stoichiometric matrix (items x lines, net per craft incl. productivity), ranks, item roles
-        (target/raw/byproduct/intermediate) and degrees of freedom of the matrix solver's square system."""
-        return planner_matrix(db, lines, targets, imports, surplus_items, defaults, force, validate_stage)
+        (target/raw/byproduct/intermediate/consumed_input) and degrees of freedom of the matrix solver's square system."""
+        return planner_matrix(
+            db, lines, targets, imports, surplus_items, defaults, force, validate_stage, consume=consume
+        )
 
     return mcp
 

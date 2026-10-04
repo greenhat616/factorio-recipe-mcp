@@ -29,10 +29,17 @@ def recipe_matrix(lines: Sequence[Line]) -> tuple[list[str], NDArray[np.float64]
 
 
 def analyze_matrix(
-    lines: Sequence[Line], targets: Mapping[str, float], imports: set[str], surplus_items: set[str]
+    lines: Sequence[Line],
+    targets: Mapping[str, float],
+    imports: set[str],
+    surplus_items: set[str],
+    consume: Mapping[str, float] | None = None,
 ) -> tuple[list[str], list[Column], NDArray[np.float64], NDArray[np.float64], MatrixInfo, list[int]]:
-    """Factory Planner style square system: unknown roles chosen from item roles."""
-    keys = sorted({k for r in lines for k in r.balance} | set(targets))
+    """Factory Planner style square system: unknown roles chosen from item roles.
+
+    Consumed inputs (Helmod input mode) are known external supplies: no unknown, right-hand side -amount."""
+    consume = consume or {}
+    keys = sorted({k for r in lines for k in r.balance} | set(targets) | set(consume))
     produced = {k for r in lines for k, v in r.balance.items() if v > 0}
     consumed = {k for r in lines for k, v in r.balance.items() if v < 0}
     roles: dict[str, ItemRole] = {}
@@ -41,6 +48,9 @@ def analyze_matrix(
     for k in keys:
         if k in targets:
             roles[k] = 'target'
+        elif k in consume:
+            roles[k] = 'consumed_input'
+            continue
         elif k not in produced:
             roles[k] = 'raw'
         elif k not in consumed:
@@ -58,7 +68,7 @@ def analyze_matrix(
         [('line', j) for j in free_lines] + [('import', k) for k in imp] + [('surplus', k) for k in sur]
     )
     M = np.zeros((len(keys), len(cols)))
-    b = np.array([targets.get(k, 0.0) for k in keys])
+    b = np.array([targets.get(k, 0.0) - consume.get(k, 0.0) for k in keys])
     for c, (kind, ref) in enumerate(cols):
         if kind == 'line':
             for k, v in lines[ref].balance.items():
@@ -81,9 +91,14 @@ def analyze_matrix(
 
 
 def solve_matrix(
-    lines: Sequence[Line], targets: Mapping[str, float], imports: set[str], surplus_items: set[str], warnings: list[str]
+    lines: Sequence[Line],
+    targets: Mapping[str, float],
+    imports: set[str],
+    surplus_items: set[str],
+    warnings: list[str],
+    consume: Mapping[str, float] | None = None,
 ) -> Solution:
-    keys, cols, M, b, info, fixed_lines = analyze_matrix(lines, targets, imports, surplus_items)
+    keys, cols, M, b, info, fixed_lines = analyze_matrix(lines, targets, imports, surplus_items, consume)
     label = info.unknown_columns
     if info.degrees_of_freedom > 0:
         _, _, vt = np.linalg.svd(M)

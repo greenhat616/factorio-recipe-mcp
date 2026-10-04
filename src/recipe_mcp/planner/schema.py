@@ -200,7 +200,7 @@ class Line(BaseModel):
         )
 
 
-ItemRole = Literal['target', 'raw', 'byproduct', 'intermediate']
+ItemRole = Literal['target', 'raw', 'byproduct', 'intermediate', 'consumed_input']
 
 
 class MatrixInfo(BaseModel):
@@ -255,6 +255,7 @@ class ItemFlow(BaseModel):
     produced: float = 0.0
     consumed: float = 0.0
     imported: float = 0.0
+    supplied: float = Field(0.0, description='External supply that must be used up (consume)')
     surplus: float = 0.0
     target: float = 0.0
 
@@ -329,6 +330,7 @@ class PlanResult(Report):
     targets: dict[str, float] = Field(description='Requested rates; ratios when mode=maximize')
     scale: float | None = Field(None, description='mode=maximize: achieved rate = scale x ratio, per `per`')
     achieved_targets: dict[str, float] = Field({}, description='Target rates actually produced, per `per`')
+    consume: dict[str, float] = Field({}, description='External supplies used up exactly, per `per`')
     limits_usage: list[LimitUsage] = []
     bottlenecks: list[Bottleneck] = Field(
         [], description='Binding limits; marginal = scale (maximize) or objective (targets) gain per +1 limit unit'

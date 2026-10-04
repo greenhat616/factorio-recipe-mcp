@@ -64,3 +64,19 @@ def test_maximize_methanol_under_limestone_limit(real_db: Database, force: str, 
     assert r.scale is not None and r.scale > 0
     assert 'import:item:nullius-box-limestone' in {b.constraint for b in r.bottlenecks}
     assert r.imports['item:nullius-box-limestone'] <= 2 + 1e-6
+
+
+def test_consume_limestone_scales_pinned_route(real_db: Database, force: str, methanol: PlanResult) -> None:
+    r = plan(
+        real_db,
+        {'nullius-methanol': 1},
+        methanol.lines_for_matrix,
+        mode='maximize',
+        consume={'nullius-box-limestone': 2},
+        force=force,
+    )
+    limestone = methanol.imports['item:nullius-box-limestone']
+    assert r.scale == pytest.approx(10 * 2 / limestone, rel=1e-6)
+    flow = next(i for i in r.items if i.item == 'item:nullius-box-limestone')
+    assert flow.supplied + flow.produced - flow.consumed == pytest.approx(0, abs=1e-6)
+    assert flow.imported == 0 and flow.surplus == 0

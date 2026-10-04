@@ -100,23 +100,32 @@ def solve_lp(
     weights: Weights,
     mode: Mode = 'targets',
     limits: Sequence[LimitRow] = (),
+    consume: Mapping[str, float] | None = None,
 ) -> Solution:
     """mode='targets' meets targets at minimum cost; mode='maximize' reads targets as ratios and first
-    maximises the scale s (output = s x ratio), then minimises cost with s held at its maximum."""
+    maximises the scale s (output = s x ratio), then minimises cost with s held at its maximum.
+    consume: external supplies the lines must use up exactly; those items get no import or surplus."""
+    consume = consume or {}
     maximize = mode == 'maximize'
     caps = {r.item: r for r in limits if r.item is not None}
     rows_limits = [r for r in limits if r.item is None]
     for k in caps:
         if k in targets:
             raise ValueError(f'limits.imports caps {k}, which is a target; targets are never imported')
-    keys = sorted({k for r in lines for k in r.balance} | set(targets))
+    for k in consume:
+        if k in caps:
+            raise ValueError(f'{k} is both consumed and import-capped; consumed items are never imported')
+    keys = sorted({k for r in lines for k in r.balance} | set(targets) | set(consume))
     produced = {k for r in lines for k, v in r.balance.items() if v > 0}
     importable = [
         k
         for k in keys
-        if (k not in produced or k in imports or k in caps) and k not in forbid_imports and k not in targets
+        if (k not in produced or k in imports or k in caps)
+        and k not in forbid_imports
+        and k not in targets
+        and k not in consume
     ]
-    surplus_keys = keys if allow_surplus else [k for k in keys if k in surplus_items or k in targets]
+    surplus_keys = [k for k in keys if (allow_surplus or k in surplus_items or k in targets) and k not in consume]
     lp = LPBuilder()
     rows: dict[str, dict[int, float]] = {k: {} for k in keys}
     for j, r in enumerate(lines):
@@ -139,7 +148,7 @@ def solve_lp(
     for k in keys:
         if maximize and k in targets:
             rows[k][s_col] = -targets[k]
-        lp.add_eq(k, rows[k], 0.0 if maximize else targets.get(k, 0.0))
+        lp.add_eq(k, rows[k], (0.0 if maximize else targets.get(k, 0.0)) - consume.get(k, 0.0))
     for row in rows_limits:
         lp.add_ub(row.name, {j: v for j, v in enumerate(row.coef) if v}, row.limit)
     warnings: list[str] = []
@@ -168,7 +177,7 @@ def solve_lp(
             hint = (
                 f'; no producing line for {missing}'
                 if missing
-                else '; check limits, forbid_imports, fixed_machines/max_machines or allow_surplus'
+                else '; check limits, consume, forbid_imports, fixed_machines/max_machines or allow_surplus'
             )
             raise ValueError(f'LP infeasible: {res.message}{hint}')
         duals = res

@@ -5,7 +5,7 @@ from typing import Any, Literal
 
 import numpy as np
 from numpy.typing import NDArray
-from scipy.optimize import linprog
+from scipy.optimize import Bounds, LinearConstraint, linprog, milp
 from scipy.sparse import csr_matrix
 
 from .schema import ConstraintState, Infeasibility, LimitRow, Line, Mode, Solution, Weights
@@ -27,10 +27,13 @@ class LPBuilder:
         self.ub_names: list[str] = []
         self.ub_rows: list[Coeffs] = []
         self.ub_rhs: list[float] = []
+        self.integer: set[int] = set()
 
-    def col(self, name: str, cost: float = 0.0, lb: float = 0.0, ub: float | None = None) -> int:
+    def col(self, name: str, cost: float = 0.0, lb: float = 0.0, ub: float | None = None, integer: bool = False) -> int:
         if name in self.index:
             raise ValueError(f'Duplicate LP column {name}')
+        if integer:
+            self.integer.add(len(self.cols))
         self.index[name] = len(self.cols)
         self.cols.append(name)
         self.cost.append(cost)
@@ -84,6 +87,25 @@ class LPBuilder:
             method='highs',
         )
 
+    def solve_milp(self, cost: Sequence[float] | None = None, time_limit: float = 10.0) -> Any:
+        c, A_eq, b_eq, A_ub, b_ub = self.arrays()
+        if cost is not None:
+            c = np.array(cost, dtype=float)
+        constraints = []
+        if self.eq_names:
+            constraints.append(LinearConstraint(A_eq, b_eq, b_eq))
+        if self.ub_names:
+            constraints.append(LinearConstraint(A_ub, -np.inf, b_ub))
+        bounds = Bounds([b[0] for b in self.bounds], [np.inf if b[1] is None else b[1] for b in self.bounds])
+        integrality = np.array([1 if j in self.integer else 0 for j in range(len(self.cols))])
+        return milp(
+            c,
+            constraints=constraints,
+            integrality=integrality,
+            bounds=bounds,
+            options={'time_limit': time_limit, 'mip_rel_gap': 1e-4},
+        )
+
     def eq_residual(self, x: NDArray[np.float64]) -> float:
         _, A_eq, b_eq, _, _ = self.arrays()
         return float(np.max(np.abs(A_eq @ x - b_eq))) if len(b_eq) else 0.0
@@ -91,6 +113,10 @@ class LPBuilder:
 
 HIGHS_INFEASIBLE = 2
 HIGHS_UNBOUNDED = 3
+# scipy.optimize.milp: 1 = time or iteration limit (x is set when a feasible point was found),
+# 4 = HiGHS could not tell infeasible from unbounded.
+MILP_LIMIT = 1
+MILP_INFEASIBLE_OR_UNBOUNDED = 4
 # Floor for relative slack costs, so a zero limit still has a finite violation cost.
 EPS_LIMIT = 1e-9
 ELASTIC_NOTE = (
@@ -111,11 +137,15 @@ def solve_lp(
     mode: Mode = 'targets',
     limits: Sequence[LimitRow] = (),
     consume: Mapping[str, float] | None = None,
+    integer: bool = False,
+    time_limit: float = 10.0,
 ) -> Solution:
     """mode='targets' meets targets at minimum cost; mode='maximize' reads targets as ratios and first
     maximises the scale s (output = s x ratio), then minimises cost with s held at its maximum.
     consume: external supplies the lines must use up exactly; those items get no import or surplus.
-    An infeasible problem with limits or consume is re-solved elastically to report what to relax."""
+    An infeasible problem with limits or consume is re-solved elastically to report what to relax.
+    integer: whole machine counts n_l >= crafts / crafts_per_machine carry the machine cost and the machine,
+    power, pollution, beacon and module limits (a MILP, so no duals and no elastic diagnosis)."""
     consume = consume or {}
     maximize = mode == 'maximize'
     caps = {r.item: r for r in limits if r.item is not None}
@@ -138,7 +168,7 @@ def solve_lp(
     ]
     surplus_keys = [k for k in keys if (allow_surplus or k in surplus_items or k in targets) and k not in consume]
 
-    def build(elastic: bool) -> LPBuilder:
+    def build(elastic: bool, whole: bool = False) -> LPBuilder:
         """elastic=True gives every limit, target and consume amount a slack priced by its relative size;
         line bounds (fixed_machines, max_machines) stay hard because the user declared them."""
         lp = LPBuilder()
@@ -152,8 +182,14 @@ def solve_lp(
             else:
                 lb, ub = 0, None if r.max_machines is None else r.max_machines * r.crafts_per_machine
             # Line variables are crafts per second, so per-machine costs scale by 1 / crafts_per_machine.
-            cost = r.cost_weight * (weights.machines + weights.power_MW * r.power_W / 1e6) / r.crafts_per_machine
-            c = lp.col(f'x:{j}', base * cost, lb, ub)
+            machine_cost = r.cost_weight * weights.machines
+            power_cost = r.cost_weight * weights.power_MW * r.power_W / 1e6
+            if whole:
+                c = lp.col(f'x:{j}', base * power_cost / r.crafts_per_machine, lb, ub)
+                n = lp.col(f'n:{j}', base * machine_cost, integer=True)
+                lp.add_ub(f'whole:{j}', {c: 1, n: -r.crafts_per_machine}, 0)
+            else:
+                c = lp.col(f'x:{j}', base * (machine_cost + power_cost) / r.crafts_per_machine, lb, ub)
             for k, v in r.balance.items():
                 rows[k][c] = v
         for k in importable:
@@ -179,35 +215,59 @@ def solve_lp(
         for k in keys:
             lp.add_eq(k, rows[k], (0.0 if maximize else targets.get(k, 0.0)) - consume.get(k, 0.0))
         for row in rows_limits:
-            coeffs = {j: v for j, v in enumerate(row.coef) if v}
+            if whole:
+                coeffs = {lp.index[f'n:{j}']: v * lines[j].crafts_per_machine for j, v in enumerate(row.coef) if v}
+            else:
+                coeffs = {lp.index[f'x:{j}']: v for j, v in enumerate(row.coef) if v}
             if elastic:
                 coeffs[lp.col(f'slack:{row.name}', 1 / max(abs(row.limit), EPS_LIMIT))] = -1
             lp.add_ub(row.name, coeffs, row.limit)
         return lp
 
-    lp = build(elastic=False)
+    lp = build(elastic=False, whole=integer)
     warnings: list[str] = []
+
+    def run(cost: Sequence[float] | None = None) -> Any:
+        return lp.solve_milp(cost, time_limit) if integer else lp.solve(cost)
+
+    def found(res: Any) -> bool:
+        return bool(res.status == 0 or (integer and res.status == MILP_LIMIT and res.x is not None))
+
+    def unbounded(res: Any) -> bool:
+        if res.status == HIGHS_UNBOUNDED:
+            return True
+        if integer and res.status == MILP_INFEASIBLE_OR_UNBOUNDED:
+            relaxed = build(elastic=False)
+            s = relaxed.index['s']
+            return bool(relaxed.solve([-1.0 if j == s else 0.0 for j in range(len(relaxed.cols))]).status == 3)
+        return False
+
     if maximize:
         s_col = lp.index['s']
-        res_scale = lp.solve([-1.0 if j == s_col else 0.0 for j in range(len(lp.cols))])
-        if res_scale.status == HIGHS_UNBOUNDED:
+        res_scale = run([-1.0 if j == s_col else 0.0 for j in range(len(lp.cols))])
+        if unbounded(res_scale):
             raise ValueError(
                 'Maximize is unbounded: nothing limits the scale. Add limits.imports, power_MW, machines, '
                 'machines_by_type or pollution_per_minute, consume, or fix a line with fixed_machines/max_machines.'
             )
         res = res_scale
-        if res_scale.success:
+        if found(res_scale):
             lp.add_ub('scale_floor', {s_col: -1.0}, -float(res_scale.x[s_col]) * (1 - 1e-9))
-            res = lp.solve()
-            if not res.success:
+            res = run()
+            if not found(res):
                 warnings.append(
                     f'Cost minimisation at the maximum scale failed ({res.message}); returning the scale-only solution'
                 )
                 res = res_scale
         duals = res_scale
     else:
-        res = duals = lp.solve()
-    if not duals.success:
+        res = duals = run()
+    if not found(duals):
+        if integer:
+            raise ValueError(
+                f'Integer machine counts infeasible ({duals.message}); run without integer_machines '
+                'for the elastic diagnosis of limits and consume amounts.'
+            )
         if duals.status == HIGHS_INFEASIBLE and (limits or consume):
             return elastic_solution(build(elastic=True), lines, importable, surplus_keys, targets, consume, limits)
         missing = sorted(k for k in targets if k not in produced and k not in importable)
@@ -218,33 +278,45 @@ def solve_lp(
         )
         raise ValueError(f'LP infeasible: {duals.message}{hint}')
     x = res.x
+    counts = [round(float(x[lp.index[f'n:{j}']])) for j in range(len(lines))] if integer else None
     states: list[ConstraintState] = []
-    ineq = duals.ineqlin.marginals if lp.ub_names else []
+    ineq = duals.ineqlin.marginals if lp.ub_names and not integer else None
     for i, row in enumerate(rows_limits):
-        used = sum(v * x[j] for j, v in enumerate(row.coef))
+        if counts is not None:
+            used = sum(v * lines[j].crafts_per_machine * counts[j] for j, v in enumerate(row.coef))
+        else:
+            used = sum(v * x[lp.index[f'x:{j}']] for j, v in enumerate(row.coef))
         states.append(
             ConstraintState(
-                name=row.name, limit=row.limit, used=used, marginal=-float(ineq[i]), rate=row.rate, unit=row.unit
+                name=row.name,
+                limit=row.limit,
+                used=used,
+                marginal=None if ineq is None else -float(ineq[i]),
+                rate=row.rate,
+                unit=row.unit,
             )
         )
     for k, cap_row in caps.items():
         col = lp.index.get(f'm:{k}')
         used = float(x[col]) if col is not None else 0.0
-        marginal = -float(duals.upper.marginals[col]) if col is not None else 0.0
+        marginal = None if integer else -float(duals.upper.marginals[col]) if col is not None else 0.0
         states.append(
             ConstraintState(
                 name=cap_row.name, limit=cap_row.limit, used=used, marginal=marginal, rate=True, unit=cap_row.unit
             )
         )
     prices = dict(zip(keys, res.eqlin.marginals, strict=True)) if getattr(res, 'eqlin', None) is not None else {}
+    timed_out = integer and res.status == MILP_LIMIT
     return Solution(
-        x=x[: len(lines)].tolist(),
+        x=[float(x[lp.index[f'x:{j}']]) for j in range(len(lines))],
+        counts=counts,
+        mip_gap=float(res.mip_gap) if integer and res.mip_gap is not None else None,
         imports={k: float(x[lp.index[f'm:{k}']]) for k in importable},
         surplus={k: float(x[lp.index[f'u:{k}']]) for k in surplus_keys},
         residual=lp.eq_residual(x),
         objective=float(np.array(lp.cost) @ x),
         prices={k: float(v) for k, v in prices.items()},
-        status=res.message,
+        status='time_limit' if timed_out else res.message,
         scale=float(x[lp.index['s']]) if maximize else None,
         constraints=states,
         warnings=warnings,
@@ -307,7 +379,7 @@ def elastic_solution(
                     )
                 )
     return Solution(
-        x=x[: len(lines)].tolist(),
+        x=[float(x[lp.index[f'x:{j}']]) for j in range(len(lines))],
         imports={k: float(x[lp.index[f'm:{k}']]) for k in importable},
         surplus={k: float(x[lp.index[f'u:{k}']]) for k in surplus_keys},
         residual=lp.eq_residual(x),

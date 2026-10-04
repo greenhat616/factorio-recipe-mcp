@@ -57,8 +57,8 @@ def check_block(db: Database, plan: PlanFile, block: Block) -> None:
                 raise ValueError(f'{name} is both a target and consumed')
             if not math.isfinite(v) or v <= 0:
                 raise ValueError(f'consume {name}={v} must be finite and positive')
-        if req.solver == 'matrix' and (req.mode == 'maximize' or req.limits):
-            raise ValueError('mode=maximize and limits need the lp solver')
+        if req.solver == 'matrix' and (req.mode == 'maximize' or req.limits or req.integer_machines):
+            raise ValueError('mode=maximize, limits and integer_machines need the lp solver')
         auto = (not req.lines) if req.auto_discover is None else req.auto_discover
         if auto and not req.targets:
             raise ValueError('auto-discovery needs targets; pass lines')

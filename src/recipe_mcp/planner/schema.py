@@ -260,6 +260,8 @@ class Solution(BaseModel):
     """Solver output in internal per-second units; x is crafts per second per line."""
 
     x: list[float]
+    counts: list[int] | None = Field(None, description='Whole machines per line (integer mode)')
+    mip_gap: float | None = None
     imports: dict[str, float]
     surplus: dict[str, float]
     residual: float
@@ -393,6 +395,8 @@ class PlanResult(Report):
         [], description='Binding limits; marginal = scale (maximize) or objective (targets) gain per +1 limit unit'
     )
     bottlenecks_note: str | None = None
+    integer_machines: bool = False
+    mip_gap: float | None = Field(None, description='Relative MIP gap; > 0 when the time limit stopped the search')
     infeasibility: list[Infeasibility] = Field(
         [], description='status=infeasible: relaxations that make the plan feasible; lines show the relaxed plan'
     )

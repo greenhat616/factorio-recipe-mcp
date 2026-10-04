@@ -211,6 +211,8 @@ def create_server(db: Database, plans_dir: Path = PLANS_DIR) -> FastMCP:
         consume: dict[str, float] = {},
         disposal: DisposalMode = 'report',
         disposal_defaults: Defaults | None = None,
+        integer_machines: bool = False,
+        time_limit: float = 10.0,
     ) -> PlanResult:
         """Helmod/Factory Planner style rate calculator: machine counts, modules/beacons, power, imports, byproducts.
 
@@ -240,6 +242,9 @@ def create_server(db: Database, plans_dir: Path = PLANS_DIR) -> FastMCP:
                 disposal_defaults (machine_preference defaults to efficient); reported in disposal, disposal_totals
                 and totals_with_disposal (totals itself excludes them); disposal_unhandled lists items with no void.
                 Never affects route choice. disposal='none' skips it.
+        integer_machines (lp only, <= 400 lines): whole machine counts carry the machine cost and the machine, power,
+                pollution, beacon and module limits (MILP, time_limit seconds per stage; status time_limit with mip_gap
+                if stopped early). No marginal values and no elastic diagnosis. Pin routes first for large plans.
         Stage-locked recipes/machines/modules are rejected unless validate_stage=false.
         Feed result.lines_for_matrix back as `lines` (with result.matrix_args for the matrix solver) to pin a plan."""
         return plan(
@@ -271,6 +276,8 @@ def create_server(db: Database, plans_dir: Path = PLANS_DIR) -> FastMCP:
             consume=consume,
             disposal=disposal,
             disposal_defaults=disposal_defaults,
+            integer_machines=integer_machines,
+            time_limit=time_limit,
         )
 
     @mcp.tool()

@@ -473,3 +473,35 @@ def test_disposal_does_not_change_the_route() -> None:
     a = plan(db, {'petro': 55}, ['aop', 'hc'], validate_stage=False)
     b = plan(db, {'petro': 55}, ['aop', 'hc'], disposal='none', validate_stage=False)
     assert a.totals == b.totals
+
+
+def test_integer_machines_maximize(db: Database) -> None:
+    # 2.5 machines allow scale 2.5 continuously but only 2 whole gear-a machines.
+    kw: dict[str, Any] = dict(mode='maximize', limits={'machines': 2.5}, validate_stage=False)
+    cont = plan(db, {'gear': 1}, ['gear-a', 'gear-b'], **kw)
+    whole = plan(db, {'gear': 1}, ['gear-a', 'gear-b'], integer_machines=True, **kw)
+    assert cont.scale == approx(2.5, 1e-7) and whole.scale == approx(2, 1e-7)
+    assert whole.integer_machines and whole.mip_gap is not None and whole.bottlenecks == []
+    assert whole.bottlenecks_note and whole.limits_usage[0].used == approx(2)
+    assert [(line.recipe, line.machines_ceil) for line in whole.lines] == [('gear-a', 2)]
+
+
+def test_integer_machines_targets(db: Database) -> None:
+    # 1.25 gear/s: gear-a alone needs 2 whole machines; 1 gear-a + 1 gear-b also makes 1.25 with 2 machines and
+    # fewer plates, which the imports tie-breaker prefers.
+    r = plan(db, {'gear': 1.25}, ['gear-a', 'gear-b'], integer_machines=True, validate_stage=False)
+    assert r.status == 'optimal' and r.totals.machines_ceil == 2
+    assert {line.recipe: line.machines_ceil for line in r.lines} == {'gear-a': 1, 'gear-b': 1}
+    assert r.max_balance_error < 1e-6
+
+
+def test_integer_machines_rejections(db: Database) -> None:
+    with pytest.raises(ValueError, match='lp solver'):
+        plan(db, {'petro': 100}, OIL, solver='matrix', integer_machines=True, validate_stage=False)
+    with pytest.raises(ValueError, match='elastic diagnosis'):
+        plan(db, {'gear': 3}, ['gear-a'], limits={'machines': 2.5}, integer_machines=True, validate_stage=False)
+    with pytest.raises(ValueError, match='unbounded'):
+        plan(db, {'gear': 1}, ['gear-a'], mode='maximize', integer_machines=True, validate_stage=False)
+    many: list[str | LineSpec] = [LineSpec(recipe='gear-a', id=f'a{i}') for i in range(401)]
+    with pytest.raises(ValueError, match='at most 400 lines'):
+        plan(db, {'gear': 1}, many, integer_machines=True, validate_stage=False)

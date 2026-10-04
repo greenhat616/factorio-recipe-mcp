@@ -98,3 +98,9 @@ def test_nullius_beacon_interference(real_db: Database) -> None:
     (row,) = st.beacons
     assert row.entity == 'nullius-beacon-2-3' and row.item == 'nullius-beacon-2'
     assert row.effect_factor == pytest.approx(0.24) and st.power_per_machine_MW.beacons == pytest.approx(0.12)
+
+
+def test_integer_machines_on_pinned_route(real_db: Database, force: str, methanol: PlanResult) -> None:
+    whole = plan(real_db, {'nullius-methanol': 10}, methanol.lines_for_matrix, integer_machines=True, force=force)
+    assert whole.status == 'optimal' and whole.max_balance_error < 1e-6
+    assert whole.totals.machines_ceil <= methanol.totals.machines_ceil

@@ -29,6 +29,7 @@ from .schema import (
     Per,
     PlanLine,
     PlanResult,
+    PlanStatus,
     ProductionMatrix,
     RateRequirement,
     SnapshotProvenance,
@@ -37,6 +38,9 @@ from .schema import (
     WeightName,
     Weights,
 )
+
+# A MILP over more candidate lines than this is slow and rarely needed: route choice is a continuous question.
+MAX_INTEGER_LINES = 400
 
 
 def plan(
@@ -68,6 +72,8 @@ def plan(
     consume: Mapping[str, float] | None = None,
     disposal: DisposalMode = 'report',
     disposal_defaults: Defaults | Mapping[str, Any] | None = None,
+    integer_machines: bool = False,
+    time_limit: float = 10.0,
 ) -> PlanResult:
     factor = TIME[per]
     void_defaults = disposal_defaults_for(disposal_defaults)
@@ -91,8 +97,8 @@ def plan(
     if not tgt and mode == 'maximize':
         raise ValueError('mode=maximize needs ratio targets to scale')
     constrained = lim != Limits()
-    if solver == 'matrix' and (mode == 'maximize' or constrained):
-        raise ValueError('mode=maximize and limits need the lp solver; use solver="lp"')
+    if solver == 'matrix' and (mode == 'maximize' or constrained or integer_machines):
+        raise ValueError('mode=maximize, limits and integer_machines need the lp solver; use solver="lp"')
     import_keys = {p.key(n) for n in imports}
     forbid = {p.key(n) for n in forbid_imports}
     surplus = {p.key(n) for n in surplus_items}
@@ -129,11 +135,31 @@ def plan(
         w = Weights.model_validate({**OBJECTIVES[objective].model_dump(), **(weights or {})})
         if w.beacons or w.modules:
             raise ValueError('weights.beacons and weights.modules are reserved and not implemented yet')
+        if integer_machines and len(rows) > MAX_INTEGER_LINES:
+            raise ValueError(
+                f'integer_machines allows at most {MAX_INTEGER_LINES} lines, got {len(rows)}: solve continuously '
+                'first, then pass its lines_for_matrix as lines with auto_discover=false.'
+            )
         limit_list = limit_rows(p, rows, lim, factor)
-        sol = solve_lp(rows, tgt, import_keys, forbid, costs, allow_surplus, surplus, w, mode, limit_list, supply)
+        sol = solve_lp(
+            rows,
+            tgt,
+            import_keys,
+            forbid,
+            costs,
+            allow_surplus,
+            surplus,
+            w,
+            mode,
+            limit_list,
+            supply,
+            integer_machines,
+            time_limit,
+        )
     else:
         sol = solve_matrix(rows, tgt, import_keys, surplus, p.warnings, supply)
     infeasible = sol.status == 'infeasible'
+    status: PlanStatus = 'infeasible' if infeasible else 'time_limit' if sol.status == 'time_limit' else 'optimal'
     short = {f.name: f.shortfall for f in sol.infeasibility if f.kind != 'limit'}
     if sol.scale is not None:
         achieved = {k: v * sol.scale for k, v in tgt.items()}
@@ -142,6 +168,8 @@ def plan(
     used_supply = {k: v - short.get(k, 0.0) for k, v in supply.items()}
     out = report(p, rows, sol, achieved, factor, consume=used_supply)
     out.warnings += sol.warnings
+    if sol.status == 'time_limit':
+        out.warnings.append(f'time_limit={time_limit}s reached: best integer plan found, MIP gap {sol.mip_gap}')
     usage, bottlenecks = usage_report(sol.constraints, mode, factor, per)
     infeasibility, suggestions = infeasibility_report(sol.infeasibility, factor, per)
     void_rows: list[PlanLine] = []
@@ -166,7 +194,10 @@ def plan(
         )
     return PlanResult(
         **dict(out),
-        status='infeasible' if infeasible else 'optimal',
+        status=status,
+        integer_machines=integer_machines,
+        mip_gap=sol.mip_gap,
+        bottlenecks_note='Marginal values are not available for integer machine counts' if integer_machines else None,
         disposal=void_rows,
         disposal_totals=void_totals,
         totals_with_disposal=add_totals(out.totals, void_totals) if void_totals else None,

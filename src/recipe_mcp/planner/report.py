@@ -8,10 +8,12 @@ from .model import EPS, Planner
 from .schema import ItemFlow, Line, ModuleCount, PlanLine, Report, Solution, Totals
 
 
-def plan_line(r: Line, x: float, factor: float) -> PlanLine:
-    """One line running x crafts per second (internal units), reported per `per`."""
+def plan_line(r: Line, x: float, factor: float, count: int | None = None) -> PlanLine:
+    """One line running x crafts per second (internal units), reported per `per`; count overrides the
+    rounded-up machine count when whole machines were solved for."""
     machines = x / r.crafts_per_machine
-    count = math.ceil(machines - 1e-6) if machines > 0 else 0
+    if count is None:
+        count = math.ceil(machines - 1e-6) if machines > 0 else 0
     fuel = machines * r.active_W if not r.electric and r.energy_type != 'void' else 0
     return PlanLine(
         id=r.id,
@@ -95,7 +97,8 @@ def report(
     flows: defaultdict[str, ItemFlow] = defaultdict(lambda: ItemFlow(item=''))
     rows: list[PlanLine] = []
     total = Totals()
-    for r, x in zip(lines, solution.x, strict=True):
+    counts: Sequence[int | None] = solution.counts or [None] * len(lines)
+    for r, x, n in zip(lines, solution.x, counts, strict=True):
         if abs(x) < EPS:
             continue
         for k, v in r.balance.items():
@@ -103,7 +106,7 @@ def report(
                 flows[k].produced += v * x
             else:
                 flows[k].consumed += abs(v * x)
-        row = plan_line(r, x, factor)
+        row = plan_line(r, x, factor, n)
         rows.append(row)
         add_line(total, row)
     for k, v in solution.imports.items():

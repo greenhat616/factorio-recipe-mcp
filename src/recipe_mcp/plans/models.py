@@ -68,6 +68,8 @@ class BlockRequest(Spec):
     consume: dict[str, float] = {}
     disposal: DisposalMode = 'report'
     disposal_defaults: Defaults | None = None
+    integer_machines: bool = False
+    time_limit: float = 10.0
 
 
 class Fingerprint(BaseModel):

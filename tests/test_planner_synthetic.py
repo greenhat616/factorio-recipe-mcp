@@ -388,3 +388,43 @@ def test_matrix_consume_is_helmod_input_mode(db: Database) -> None:
     assert r.matrix is not None and r.matrix.roles['fluid:crude'] == 'consumed_input'
     pm = production_matrix(db, OIL, consume={'crude': 100})
     assert pm.square_system.roles['fluid:crude'] == 'consumed_input' and pm.square_system.degrees_of_freedom == 0
+
+
+def test_elastic_diagnosis_lowers_the_target(db: Database) -> None:
+    # Relaxing the crude cap costs (100 / 97.5) / 50 per unit of petro, cutting the target 1 / 100: cut the target.
+    r = plan(db, {'petro': 100}, OIL, limits={'imports': {'crude': 50}}, validate_stage=False)
+    assert r.status == 'infeasible' and r.note
+    (f,) = r.infeasibility
+    assert (f.kind, f.name) == ('target', 'fluid:petro') and f.achievable == approx(48.75, 1e-6)
+    assert r.achieved_targets['fluid:petro'] == approx(48.75, 1e-6)
+    assert r.suggestions[0].startswith('Or lower target fluid:petro to <= 48.75')
+
+
+def test_elastic_diagnosis_raises_a_limit_when_lines_are_fixed(db: Database) -> None:
+    # Ten refineries draw 4.2 MW; no target can give way, so the power limit must.
+    lines: list[str | LineSpec] = [LineSpec(recipe='aop', fixed_machines=10), 'hc', 'lc']
+    r = plan(db, {}, lines, limits={'power_MW': 1}, validate_stage=False)
+    (f,) = r.infeasibility
+    assert (f.kind, f.name) == ('limit', 'power_MW') and f.achievable == approx(4.2, 1e-6)
+    assert r.suggestions == ['Raise limits.power_MW to >= 4.2 MW']
+
+
+def test_elastic_diagnosis_in_maximize_mode(db: Database) -> None:
+    # Using up 100 crude needs at least 2.1 MW of refineries; with 1 MW only 100 / 2.1 crude can be consumed.
+    r = plan(
+        db, {'petro': 1}, OIL, mode='maximize', consume={'crude': 100}, limits={'power_MW': 1}, validate_stage=False
+    )
+    (f,) = r.infeasibility
+    assert (f.kind, f.name) == ('consume', 'fluid:crude') and f.achievable == approx(100 / 2.1, 1e-6)
+    assert r.consume == {'fluid:crude': 100}
+
+
+def test_elastic_diagnosis_keeps_line_bounds_hard(db: Database) -> None:
+    lines = [LineSpec(recipe='aop', fixed_machines=1)]
+    with pytest.raises(ValueError, match=r"fixed_machines/max_machines on \['aop'\]"):
+        plan(db, {'petro': 1}, lines, allow_surplus=False, limits={'power_MW': 100}, validate_stage=False)
+
+
+def test_infeasible_without_limits_keeps_the_plain_error(db: Database) -> None:
+    with pytest.raises(ValueError, match='LP infeasible'):
+        plan(db, {'petro': 1}, [LineSpec(recipe='aop', fixed_machines=1)], allow_surplus=False, validate_stage=False)

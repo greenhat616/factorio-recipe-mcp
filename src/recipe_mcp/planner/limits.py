@@ -4,7 +4,7 @@ import math
 from collections.abc import Sequence
 
 from .model import CRAFTING_KINDS, Planner
-from .schema import Bottleneck, ConstraintState, LimitRow, Limits, LimitUsage, Line, Mode, Per
+from .schema import Bottleneck, ConstraintState, Infeasibility, LimitRow, Limits, LimitUsage, Line, Mode, Per
 
 TIGHT = 1e-6
 MACHINE_KINDS = (*CRAFTING_KINDS, 'mining-drill')
@@ -73,3 +73,34 @@ def usage_report(
             )
         )
     return usage, bottlenecks
+
+
+def limit_key(name: str) -> str:
+    """'import:item:x' -> 'imports.item:x', 'machines_by_type:m' -> 'machines_by_type.m'."""
+    kind, _, rest = name.partition(':')
+    return {'import': 'imports'}.get(kind, kind) + (f'.{rest}' if rest else '')
+
+
+def infeasibility_report(
+    found: Sequence[Infeasibility], factor: float, per: Per
+) -> tuple[list[Infeasibility], list[str]]:
+    out: list[Infeasibility] = []
+    suggestions: list[str] = []
+    for f in found:
+        scale = factor if f.rate else 1.0
+        unit = f'{f.unit}/{per}' if f.rate else f.unit
+        g = f.model_copy(
+            update=dict(
+                requested=f.requested * scale, achievable=f.achievable * scale, shortfall=f.shortfall * scale, unit=unit
+            )
+        )
+        out.append(g)
+        if g.kind == 'limit':
+            suggestions.append(f'Raise limits.{limit_key(g.name)} to >= {g.achievable:.6g} {unit}')
+        elif g.kind == 'target':
+            suggestions.append(
+                f'Or lower target {g.name} to <= {g.achievable:.6g} {unit} (mode=maximize finds the largest rate)'
+            )
+        else:
+            suggestions.append(f'Or lower consume {g.name} to <= {g.achievable:.6g} {unit}')
+    return out, suggestions

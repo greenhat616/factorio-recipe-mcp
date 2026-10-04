@@ -7,8 +7,8 @@ from typing import Any
 import numpy as np
 
 from ..database import Database
-from .limits import limit_rows, usage_report
-from .lp import solve_lp
+from .limits import infeasibility_report, limit_rows, usage_report
+from .lp import ELASTIC_NOTE, solve_lp
 from .matrix import analyze_matrix, recipe_matrix, solve_matrix
 from .model import OBJECTIVES, TIME, Planner
 from .report import report
@@ -123,10 +123,17 @@ def plan(
         sol = solve_lp(rows, tgt, import_keys, forbid, costs, allow_surplus, surplus, w, mode, limit_list, supply)
     else:
         sol = solve_matrix(rows, tgt, import_keys, surplus, p.warnings, supply)
-    achieved = {k: v * sol.scale for k, v in tgt.items()} if sol.scale is not None else tgt
-    out = report(p, rows, sol, achieved, factor, consume=supply)
+    infeasible = sol.status == 'infeasible'
+    short = {f.name: f.shortfall for f in sol.infeasibility if f.kind != 'limit'}
+    if sol.scale is not None:
+        achieved = {k: v * sol.scale for k, v in tgt.items()}
+    else:
+        achieved = {k: v - short.get(k, 0.0) for k, v in tgt.items()}
+    used_supply = {k: v - short.get(k, 0.0) for k, v in supply.items()}
+    out = report(p, rows, sol, achieved, factor, consume=used_supply)
     out.warnings += sol.warnings
     usage, bottlenecks = usage_report(sol.constraints, mode, factor, per)
+    infeasibility, suggestions = infeasibility_report(sol.infeasibility, factor, per)
     if frontier:
         out.warnings.append(f'max_depth reached; treated as imports where needed: {frontier[:20]}')
     if truncated:
@@ -143,6 +150,10 @@ def plan(
         )
     return PlanResult(
         **dict(out),
+        status='infeasible' if infeasible else 'optimal',
+        infeasibility=infeasibility,
+        suggestions=suggestions,
+        note=ELASTIC_NOTE if infeasible else None,
         solver=solver,
         mode=mode,
         per=per,

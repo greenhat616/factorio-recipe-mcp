@@ -72,6 +72,19 @@ class ConstraintState(BaseModel):
     unit: str
 
 
+class Infeasibility(BaseModel):
+    """One relaxation the elastic LP needed: a limit raised, or a target or consume amount lowered."""
+
+    kind: Literal['limit', 'target', 'consume']
+    name: str = Field(description='Limit name, or the item of a target or consume amount')
+    requested: float = Field(description='The limit, target or consume amount as given')
+    achievable: float = Field(description='The limit needed (kind=limit), or the amount reached')
+    shortfall: float
+    relative: float | None = Field(description='shortfall / requested; null when requested is 0')
+    rate: bool = Field(False, description='Amounts are rates that scale with `per`')
+    unit: str
+
+
 class Weights(BaseModel):
     """Objective weights per machine, per MW, per unit/s imported and per unit/s surplus."""
 
@@ -227,6 +240,7 @@ class Solution(BaseModel):
     scale: float | None = None
     constraints: list[ConstraintState] = []
     warnings: list[str] = []
+    infeasibility: list[Infeasibility] = []
 
 
 class PlanLine(BaseModel):
@@ -336,6 +350,11 @@ class PlanResult(Report):
         [], description='Binding limits; marginal = scale (maximize) or objective (targets) gain per +1 limit unit'
     )
     bottlenecks_note: str | None = None
+    infeasibility: list[Infeasibility] = Field(
+        [], description='status=infeasible: relaxations that make the plan feasible; lines show the relaxed plan'
+    )
+    suggestions: list[str] = []
+    note: str | None = None
     candidate_lines: int
     excluded_candidates: list[ExcludedCandidate]
     lines_for_matrix: list[LineSpec] = Field(description='Pass back as `lines` to pin this plan')

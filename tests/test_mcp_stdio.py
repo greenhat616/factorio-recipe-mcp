@@ -20,7 +20,7 @@ async def run(db: Database, force: str, plan_name: str) -> None:
         async with ClientSession(read, write) as session:
             await session.initialize()
             listing = await session.list_tools()
-            assert len(listing.tools) == 20
+            assert len(listing.tools) == 21
 
             async def call(name: str, args: JSON, error: bool = False) -> Any:
                 result = await session.call_tool(name, args)
@@ -164,6 +164,8 @@ async def plan_tools(call: Any, force: str, name: str) -> None:
     assert solved['blocks'][0]['status'] == 'optimal' and solved['factory']['net_inputs']
     pinned = (await call('plan_edit', {'name': name, 'ops': [{'op': 'pin', 'block_id': 'methanol'}]}))[0]
     assert pinned['revision'] == 4
+    compared = (await call('plan_compare', {'a': name, 'b': f'{name}/methanol'}))[0]
+    assert compared['totals']['machines']['diff'] == 0
     view = (await call('plan_get', {'name': name, 'include_results': False}))[0]
     assert view['plan']['blocks'][0]['result'] is None and view['plan']['blocks'][0]['request']['lines']
     await call('plan_delete', {'name': name, 'confirm': 'wrong'}, error=True)
@@ -173,7 +175,7 @@ async def plan_tools(call: Any, force: str, name: str) -> None:
 
 @pytest.mark.realdata
 def test_stdio_tools(real_db: Database, force: str) -> None:
-    """All 20 tools over real stdio: pagination, force selection, locked-recipe/machine rejection, theory mode,
+    """All 21 tools over real stdio: pagination, force selection, locked-recipe/machine rejection, theory mode,
     and the plan tools against data/plans with a throwaway plan that is removed, trash included."""
     name = f'mcp-test-{uuid.uuid4().hex[:8]}'
     try:

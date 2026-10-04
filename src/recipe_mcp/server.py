@@ -39,7 +39,7 @@ from .planner.schema import (
     WeightName,
 )
 from .plans import PlanStore
-from .plans.factory import Detail, FactoryResult, solve_plan
+from .plans.factory import Comparison, Detail, FactoryResult, compare_plans, solve_plan
 from .plans.models import BlockInput, EditOp, EditResult, PlanDeleted, PlanSummary, PlanView
 
 StateFilter = Literal['all', 'researched', 'researching', 'available_to_research', 'locked', 'disabled', 'unknown']
@@ -378,6 +378,12 @@ def create_server(db: Database, plans_dir: Path = PLANS_DIR) -> FastMCP:
         and disposal for surplus no other block takes. A failing block is reported and the rest still solve.
         detail="full" adds each block's full solve_production result. save_results writes the summaries back."""
         return solve_plan(store, name, blocks, detail, save_results)
+
+    @mcp.tool()
+    def plan_compare(a: str, b: str) -> Comparison:
+        """Compare saved results of two plans ("plan": its enabled blocks summed) or blocks ("plan/block"): totals,
+        imports and surplus side by side with diff = b - a. Results must exist and not be stale: run plan_solve first."""
+        return compare_plans(store, a, b)
 
     @mcp.tool()
     def plan_delete(name: str, confirm: str) -> PlanDeleted:

@@ -4,7 +4,7 @@ Factorio recipe, technology and save-progress queries plus Helmod / Factory Plan
 
 ## Entry points
 
-The same 20 tools are reachable two ways:
+The same 21 tools are reachable two ways:
 
 | Entry | Command | Use |
 |---|---|---|
@@ -77,6 +77,7 @@ uv run --directory recipe-mcp recipe-mcp-cli validate_plan '{"recipe_rates":{"nu
 | `plan_save` | Create or overwrite a named plan of blocks |
 | `plan_edit` | Atomic, revision-checked edit operations on a plan |
 | `plan_solve` | Solve a plan's blocks in dependency order and sum them into a factory ledger |
+| `plan_compare` | Saved results of two plans or blocks side by side: totals, imports, surplus |
 | `plan_delete` | Move a plan to the trash folder |
 
 Every result is a pydantic model, so each tool publishes an output schema and returns `structuredContent` alongside the JSON text. Names are internal prototype IDs; localized names come back as raw locale keys. `net_balance` ignores modules and force productivity bonuses and does not treat fluids at different temperatures as interchangeable.
@@ -130,6 +131,7 @@ Typical flow: let `lp` pick the routes, then pass `lines_for_matrix` and `matrix
 - **`mode="maximize"`**: targets are ratios. The LP first finds the largest `scale` (output = `scale` × ratio) that fits the limits, then the cheapest plan at that scale. Bottleneck marginals are the scale gained per unit of limit. Without any limit the problem is unbounded and is rejected.
 - **`consume`**: `{item: rate}` supplied externally and used up exactly, never imported or left over. Works with targets or ratios in `lp`; in `matrix` the targets may be empty and the outputs come back as byproducts (Helmod input mode).
 - **Infeasibility**: when limits or consume amounts cannot all hold, the result has `status: "infeasible"`, the relaxations the elastic LP needed in `infeasibility` (a limit raised, a target or consume amount lowered), `suggestions`, and the relaxed plan in `lines`. The relaxations minimise the total relative violation together, so they are one combination, not each quantity's own maximum. `fixed_machines` and `max_machines` stay hard.
+- **`integer_machines`**: whole machine counts per line carry the machine cost and the machine, power, pollution, beacon and module limits (a MILP; `time_limit` seconds per stage, after which the best plan comes back with `status: "time_limit"` and `mip_gap`). No marginal values and no elastic diagnosis. At most 400 lines, so pin the route continuously first for large plans.
 - **Disposal** (`disposal="report"`, default): each surplus byproduct gets the void recipe and machine that vents it with the fewest machines, preferring the most power-efficient machine (`disposal_defaults` overrides, including modules). They are reported in `disposal`, `disposal_totals` and `totals_with_disposal`; `totals` and the route stay unchanged.
 
 ### Modules and beacons
@@ -147,6 +149,7 @@ A plan is a named JSON file in `data/plans/` with blocks, each a `solve_producti
 - `plan_save` validates every block like `solve_production` would, without solving, before writing. Names are 1-64 characters of `A-Z a-z 0-9 _ . -`.
 - `plan_edit` applies a list of operations all or nothing and bumps the revision; pass `expected_revision` to fail on a concurrent change. `pin` replaces a block's lines with its last result's `lines_for_matrix` (optionally switching solver); `set_modules`, `set_beacons` and `replace_module` change modules and beacons on lines or block defaults.
 - A target may be a link `{"from": ["block", ...] | "*", "plus": n}`: the sum of what those blocks import of the item. `plan_solve` solves the blocks in dependency order (cycles are reported with their path) and returns per-block results and a factory ledger: `net_inputs`, `net_outputs`, `internal_transfers`, totals, beacons, modules, and disposal for the surplus other blocks do not take. It assumes a shared bus and solves blocks independently.
+- `plan_compare` puts the saved results of two plans (enabled blocks summed) or blocks (`plan/block`) side by side; it refuses missing or stale results.
 - Plans record the prototype hash, save tick and save copy hash and report `fresh`, `stage_changed` or `prototypes_changed`. Stale plans still solve with the current data, with a warning. `plan_delete` moves the file to `data/plans/.trash/`.
 
 Not modeled:
@@ -249,7 +252,7 @@ recipe-mcp/
 │   │   ├── models.py            plan file schema, block requests, result summaries, edit operations
 │   │   ├── store.py             PlanStore: names, validation, atomic writes, revisions, fingerprints, trash
 │   │   ├── ops.py               plan_edit operations and pin
-│   │   └── factory.py           plan_solve: dependency order, linked targets, factory ledger
+│   │   └── factory.py           plan_solve and plan_compare: dependency order, linked targets, factory ledger
 │   └── export/                  prototypes.py (recipe-mcp-export), save.py (recipe-mcp-export-save)
 ├── scripts/                     one-off analyses, not part of the package; they import recipe_mcp
 │   ├── analysis/                methanol.py, science_fluids.py, pressure_transition.py

@@ -11,7 +11,7 @@ from pydantic import TypeAdapter
 from recipe_mcp.database import JSON, Database
 from recipe_mcp.planner import LineSpec, plan
 from recipe_mcp.plans import PlanStore
-from recipe_mcp.plans.factory import solve_plan
+from recipe_mcp.plans.factory import compare_plans, solve_plan
 from recipe_mcp.plans.models import BlockInput, BlockResult, EditOp, Fingerprint, TargetRef
 from recipe_mcp.plans.store import now
 
@@ -441,3 +441,19 @@ def test_real_methanol_feeds_lubricant(tmp_path: Path, real_db: Database, force:
     totals_out = sum(sum(b.achieved_targets.values()) + sum(b.surplus.values()) for b in r.blocks)
     totals_in = sum(sum(b.imports.values()) + sum(b.consume.values()) for b in r.blocks)
     assert totals_out - totals_in == pytest.approx(sum(f.net_outputs.values()) - sum(f.net_inputs.values()))
+
+
+def test_compare_saved_results(store: PlanStore) -> None:
+    store.save('one', [block('m', targets={'b': 10}, lines=['ab'])])
+    store.save(
+        'two', [block('m', targets={'b': 10}, lines=[{'recipe': 'ab', 'modules': ['pm2', 'pm2']}])], per='minute'
+    )
+    with pytest.raises(ValueError, match='run plan_solve on one first'):
+        compare_plans(store, 'one', 'two/m')
+    solve_plan(store, 'one')
+    solve_plan(store, 'two')
+    c = compare_plans(store, 'one', 'two/m')
+    # Two +20% productivity modules: 10 b per minute needs 10 / 1.4 a per minute, i.e. 1/6 of plan one's rate.
+    assert c.per == 'second' and c.warnings == ['two/m rates converted from per minute to per second']
+    assert c.imports['item:a'].a == pytest.approx(10) and c.imports['item:a'].b == pytest.approx(10 / 1.4 / 60)
+    assert c.totals['machines'].diff == pytest.approx(10 / 1.4 / 60 - 10)

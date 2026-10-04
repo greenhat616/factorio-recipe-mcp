@@ -232,3 +232,78 @@ def ledger(store: PlanStore, plan: PlanFile, results: Sequence[PlanResult], comp
         module_inventory=module_inventory([*lines, *rows]),
         complete=complete,
     )
+
+
+class Delta(BaseModel):
+    a: float
+    b: float
+    diff: float = Field(description='b - a')
+
+
+class Comparison(BaseModel):
+    a: str
+    b: str
+    per: str = Field(description='Rates of both sides are in units per this time unit (that of a)')
+    totals: dict[str, Delta]
+    imports: dict[str, Delta]
+    surplus: dict[str, Delta]
+    warnings: list[str] = []
+
+
+def saved_side(store: PlanStore, ref: str) -> tuple[PlanFile, Totals, dict[str, float], dict[str, float]]:
+    """Summed saved results of "plan" (enabled blocks) or "plan/block"."""
+    name, _, bid = ref.partition('/')
+    plan = store.read(name)
+    blocks = [plan.block(bid)] if bid else [b for b in plan.blocks if b.enabled]
+    totals = Totals()
+    imports: defaultdict[str, float] = defaultdict(float)
+    surplus: defaultdict[str, float] = defaultdict(float)
+    for b in blocks:
+        r = b.result
+        if r is None or r.totals is None:
+            raise ValueError(f'{ref}: block {b.id} has no saved result; run plan_solve on {name} first')
+        stale = store.staleness(r.fingerprint)
+        if stale in ('stage_changed', 'prototypes_changed'):
+            raise ValueError(f'{ref}: block {b.id} result is {stale}; run plan_solve on {name} first')
+        totals = add_totals(totals, r.totals)
+        for k, v in r.imports.items():
+            imports[k] += v
+        for k, v in r.surplus.items():
+            surplus[k] += v
+    return plan, totals, dict(imports), dict(surplus)
+
+
+def flat_totals(t: Totals) -> dict[str, float]:
+    out: dict[str, float] = {}
+    for k, v in t.model_dump().items():
+        if isinstance(v, dict):
+            out.update({f'{k}.{name}': n for name, n in v.items()})
+        else:
+            out[k] = float(v)
+    return out
+
+
+def deltas(a: Mapping[str, float], b: Mapping[str, float], scale_b: float = 1.0) -> dict[str, Delta]:
+    out: dict[str, Delta] = {}
+    for k in sorted(set(a) | set(b)):
+        va, vb = a.get(k, 0.0), b.get(k, 0.0) * scale_b
+        out[k] = Delta(a=va, b=vb, diff=vb - va)
+    return out
+
+
+def compare_plans(store: PlanStore, a: str, b: str) -> Comparison:
+    plan_a, totals_a, imports_a, surplus_a = saved_side(store, a)
+    plan_b, totals_b, imports_b, surplus_b = saved_side(store, b)
+    warnings: list[str] = []
+    scale = TIME[plan_a.per] / TIME[plan_b.per]
+    if plan_a.per != plan_b.per:
+        warnings.append(f'{b} rates converted from per {plan_b.per} to per {plan_a.per}')
+    return Comparison(
+        a=a,
+        b=b,
+        per=plan_a.per,
+        totals=deltas(flat_totals(totals_a), flat_totals(totals_b)),
+        imports=deltas(imports_a, imports_b, scale),
+        surplus=deltas(surplus_a, surplus_b, scale),
+        warnings=warnings,
+    )

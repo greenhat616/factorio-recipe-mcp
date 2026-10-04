@@ -4,7 +4,7 @@ from typing import Any
 import pytest
 
 from recipe_mcp.database import JSON, Database
-from recipe_mcp.planner import machine_stats, plan, production_matrix
+from recipe_mcp.planner import drain_watts, machine_stats, plan, production_matrix
 
 
 def fluid(n: str, a: float) -> JSON: return {'type': 'fluid', 'name': n, 'amount': a}
@@ -132,3 +132,26 @@ def test_auto_discovery_revisits_recipe_skipped_as_catalyst_only() -> None:
     }
     r = plan(Database(raw=raw), {'prod': 1}, forbid_imports=['b'], validate_stage=False)
     assert by_recipe(r) == {'mk': approx(1), 'loop': approx(1)}
+
+
+def test_drain_defaults_to_a_thirtieth_of_usage_for_crafting_machines() -> None:
+    electric = {'energy_usage': '300kW', 'energy_source': {'type': 'electric'}}
+    assert drain_watts(electric) == approx(10e3)
+    assert drain_watts({**electric, 'energy_source': {'type': 'electric', 'drain': '1kW'}}) == approx(1e3)
+    assert drain_watts(electric, 'mining-drill') == 0
+    assert drain_watts({**electric, 'energy_source': {'type': 'burner'}}) == 0
+
+
+def test_efficient_preference_counts_the_default_drain() -> None:
+    # 'implicit' declares no drain, so it idles at 100/30 kW and costs more than 'explicit'.
+    raw: JSON = {
+        'recipe': {'r': {'name': 'r', 'category': 'crafting', 'ingredients': [], 'results': [item('x', 1)]}},
+        'assembling-machine': {
+            'implicit': {'crafting_speed': 1, 'crafting_categories': ['crafting'], 'energy_usage': '100kW', 'energy_source': {'type': 'electric'}},
+            'explicit': {'crafting_speed': 1, 'crafting_categories': ['crafting'], 'energy_usage': '101kW',
+                         'energy_source': {'type': 'electric', 'drain': '0W'}},
+        },
+        'technology': {},
+    }
+    s = machine_stats(Database(raw=raw), 'r', defaults={'machine_preference': 'efficient'}, validate_stage=False)
+    assert s['machine'] == 'explicit'

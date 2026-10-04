@@ -14,6 +14,7 @@ from scipy.sparse import csc_matrix, eye, hstack
 
 from recipe_mcp.database import JSON, Database, amount
 from recipe_mcp.paths import DATA_DIR
+from recipe_mcp.planner import drain_watts
 
 
 def watts(value: str) -> float:
@@ -67,8 +68,7 @@ def analyze(force: str | None, rate: float, power: bool = True) -> JSON:
         def process_cost(pair: tuple[str, JSON]) -> float:
             m = pair[1]
             seconds = energy / m.get('crafting_speed', 1)
-            return seconds * (watts(m.get('energy_usage', '0W')) +
-                              watts(m.get('energy_source', {}).get('drain', '0W'))) / 1e6
+            return seconds * (watts(m.get('energy_usage', '0W')) + drain_watts(m)) / 1e6
         machine_name, machine = min(options, key=process_cost) if power else max(options, key=lambda p: p[1].get('crafting_speed', 1))
         balance: defaultdict[str, float] = defaultdict(float)
         for key, sign in [('ingredients', -1), ('results', 1)]:

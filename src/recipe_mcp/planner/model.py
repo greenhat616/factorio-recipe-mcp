@@ -38,6 +38,14 @@ def watts(value: str | None) -> float:
     return float(m.group(1)) * {'': 1, 'k': 1e3, 'M': 1e6, 'G': 1e9, 'T': 1e12, 'P': 1e15}[m.group(2)]
 
 
+def drain_watts(machine: JSON, kind: str = 'assembling-machine') -> float:
+    """Idle electric drain. Crafting machines without a declared drain use energy_usage / 30 (2.0 prototype docs)."""
+    src = machine.get('energy_source', {})
+    if src.get('type') != 'electric': return 0.0
+    if 'drain' in src: return watts(src['drain'])
+    return watts(machine.get('energy_usage')) / 30 if kind in CRAFTING_KINDS else 0.0
+
+
 def product_amount(entry: JSON, productivity: float = 0.0) -> float:
     """Expected output per craft; productivity skips ignored_by_productivity."""
     p = entry.get('probability', 1)
@@ -153,11 +161,11 @@ class Planner:
         for p in preferred:
             hit = next((o for o in opts if o[1] == p), None)
             if hit: return hit
-        def energy(m: JSON) -> float: return watts(m.get('energy_usage')) + watts(m.get('energy_source', {}).get('drain', '0W'))
-        if preference == 'slowest': return min(opts, key=lambda o: (o[2].get(speed_key, 1), energy(o[2]), o[1]))
-        if preference == 'efficient': return min(opts, key=lambda o: (energy(o[2]) / o[2].get(speed_key, 1), -o[2].get(speed_key, 1), o[1]))
+        def energy(o: Machine) -> float: return watts(o[2].get('energy_usage')) + drain_watts(o[2], o[0])
+        if preference == 'slowest': return min(opts, key=lambda o: (o[2].get(speed_key, 1), energy(o), o[1]))
+        if preference == 'efficient': return min(opts, key=lambda o: (energy(o) / o[2].get(speed_key, 1), -o[2].get(speed_key, 1), o[1]))
         if preference != 'fastest': raise ValueError('machine preference must be fastest, efficient or slowest')
-        return max(opts, key=lambda o: (o[2].get(speed_key, 1), -energy(o[2]), o[1]))
+        return max(opts, key=lambda o: (o[2].get(speed_key, 1), -energy(o), o[1]))
 
     @staticmethod
     def module_list(spec: Mapping[str, int] | Sequence[str] | None) -> list[str]:
@@ -262,10 +270,7 @@ class Planner:
         src = m.get('energy_source', {})
         usage = watts(m.get('energy_usage'))
         active_W = usage * cons_mult
-        if src.get('type') == 'electric':
-            drain_W = watts(src['drain']) if 'drain' in src else (usage / 30 if kind in CRAFTING_KINDS else 0)
-        else:
-            drain_W = 0.0
+        drain_W = drain_watts(m, kind)
         if self.validate:
             if not recipe['mining']:
                 a = self.db.availability(recipe['name'], self.force)

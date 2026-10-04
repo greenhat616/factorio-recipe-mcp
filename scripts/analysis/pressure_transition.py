@@ -16,6 +16,7 @@ from scipy.sparse import csc_matrix, eye, hstack, vstack
 
 from recipe_mcp.database import JSON, Database, amount
 from recipe_mcp.paths import DATA_DIR
+from recipe_mcp.planner import drain_watts
 from science_fluids import watts
 
 PACKS = ['nullius-' + n + '-pack' for n in
@@ -117,7 +118,7 @@ class Stage:
                 continue
             machine, proto = min(opts, key=lambda p: (-p[1].get('crafting_speed', 1), watts(p[1].get('energy_usage', '0W')), p[0]))
             seconds = r.get('energy_required', .5) / proto.get('crafting_speed', 1)
-            power = (watts(proto.get('energy_usage', '0W')) + watts(proto.get('energy_source', {}).get('drain', '0W'))) / 1e6
+            power = (watts(proto.get('energy_usage', '0W')) + drain_watts(proto)) / 1e6
             self.operations[n] = dict(recipe=r, machine=machine, machine_seconds=seconds,
                                       MW_per_craft_per_second=power * seconds,
                                       energy_type=proto.get('energy_source', {}).get('type'))

@@ -14,6 +14,7 @@ import numpy as np
 from scipy.optimize import linprog
 from recipe_mcp.database import JSON, Database, amount
 from recipe_mcp.paths import DATA_DIR
+from recipe_mcp.planner import drain_watts
 
 db = Database()
 
@@ -83,7 +84,7 @@ def solve(q: float = 100, route: str = 'normal', modules: str = 'optimize', wate
             speed = m['crafting_speed'] * max(.2, 1 + effects['speed'])
             seconds = r.get('energy_required', .5) / speed
             active = mw(m['energy_usage']) * max(.2, 1 + effects['consumption']) if m['energy_source']['type']=='electric' else 0
-            drain = mw(m['energy_source'].get('drain', '0W'))
+            drain = drain_watts(m) / 1e6
             balance: defaultdict[str, float] = defaultdict(float)
             for e in r.get('ingredients', []): balance[e['name']] -= amount(e)
             for e in r.get('results', []):

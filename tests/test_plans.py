@@ -11,6 +11,7 @@ from pydantic import TypeAdapter
 from recipe_mcp.database import JSON, Database
 from recipe_mcp.planner import LineSpec, plan
 from recipe_mcp.plans import PlanStore
+from recipe_mcp.plans.factory import solve_plan
 from recipe_mcp.plans.models import BlockInput, BlockResult, EditOp, Fingerprint, TargetRef
 from recipe_mcp.plans.store import now
 
@@ -29,6 +30,28 @@ RAW: JSON = {
             'ingredients': [item('a', 1)],
             'results': [item('b', 1)],
         },
+        # 1 a -> 1 e + 1 o, with o a byproduct that 'use-o' can take and 'void-o' vents 5 per second.
+        'ox': {
+            'name': 'ox',
+            'category': 'crafting',
+            'energy_required': 1,
+            'ingredients': [item('a', 1)],
+            'results': [item('e', 1), item('o', 1)],
+        },
+        'use-o': {
+            'name': 'use-o',
+            'category': 'crafting',
+            'energy_required': 1,
+            'ingredients': [item('o', 1)],
+            'results': [item('d', 1)],
+        },
+        'void-o': {
+            'name': 'void-o',
+            'category': 'void',
+            'energy_required': 1,
+            'ingredients': [item('o', 5)],
+            'results': [{'type': 'item', 'name': 'gone', 'amount': 1, 'probability': 0}],
+        },
         'bc': {
             'name': 'bc',
             'category': 'crafting',
@@ -38,6 +61,12 @@ RAW: JSON = {
         },
     },
     'assembling-machine': {
+        'vent': {
+            'crafting_speed': 1,
+            'crafting_categories': ['void'],
+            'energy_usage': '0kW',
+            'energy_source': {'type': 'void'},
+        },
         'asm': {
             'crafting_speed': 1,
             'crafting_categories': ['crafting'],
@@ -45,7 +74,7 @@ RAW: JSON = {
             'energy_source': {'type': 'electric', 'drain': '0W'},
             'module_slots': 2,
             'allowed_effects': ['speed', 'productivity', 'consumption', 'pollution'],
-        }
+        },
     },
     'module': {
         'pm1': {'category': 'productivity', 'effect': {'productivity': 0.1}},
@@ -299,3 +328,116 @@ def test_real_methanol_pin(tmp_path: Path, real_db: Database, force: str) -> Non
         force=force,
     )
     assert mx.totals.machines == pytest.approx(r.totals.machines, rel=1e-6)
+
+
+def test_factory_order_and_cycles(store: PlanStore) -> None:
+    store.save(
+        'cyc',
+        [
+            block('a', targets={'b': {'from': ['b']}}, lines=['ab']),
+            block('b', targets={'c': 1}, lines=['bc', 'ab']),
+        ],
+    )
+    store.edit('cyc', ops({'op': 'set_target', 'block_id': 'b', 'item': 'c', 'value': {'from': ['a']}}))
+    with pytest.raises(ValueError, match='cycle: a -> b -> a'):
+        solve_plan(store, 'cyc')
+
+
+def test_linked_target_resolves_from_imports(store: PlanStore) -> None:
+    # 15 c/s through bc (2 b -> 1 c) imports 30 b, so the upstream b target is 30 + 1.
+    store.save(
+        'link',
+        [
+            block('up', targets={'b': {'from': ['down'], 'plus': 1}}, lines=['ab']),
+            block('down', targets={'c': 15}, lines=['bc']),
+        ],
+    )
+    r = solve_plan(store, 'link')
+    assert r.order == ['down', 'up']
+    up = next(b for b in r.blocks if b.id == 'up')
+    assert up.resolved_targets == {'b': pytest.approx(31)}
+    assert r.factory.internal_transfers == {'item:b': pytest.approx(30)}
+    assert r.factory.net_outputs == {'item:b': pytest.approx(1), 'item:c': pytest.approx(15)}
+    assert r.factory.net_inputs == {'item:a': pytest.approx(31)}
+    # Only the selected block is asked for, but its dependency is solved with it.
+    assert solve_plan(store, 'link', blocks=['up'], save_results=False).order == ['down', 'up']
+
+
+def test_failing_block_is_isolated(store: PlanStore) -> None:
+    store.save(
+        'iso',
+        [
+            block('ok', targets={'c': 1}, lines=['bc', 'ab']),
+            block('bad', targets={'b': 10}, lines=[{'recipe': 'ab', 'fixed_machines': 1}], allow_surplus=False),
+        ],
+    )
+    r = solve_plan(store, 'iso')
+    status = {b.id: b.status for b in r.blocks}
+    assert status == {'bad': 'error', 'ok': 'optimal'} and not r.factory.complete
+    saved = store.read('iso').block('bad').result
+    assert saved is not None and saved.status == 'error' and saved.error
+
+
+def test_ledger_disposes_only_the_net_surplus(store: PlanStore) -> None:
+    store.save(
+        'led',
+        [
+            block('a', targets={'e': 40}, lines=['ox']),
+            block('b', targets={'d': 25}, lines=['use-o']),
+        ],
+    )
+    r = solve_plan(store, 'led')
+    f = r.factory
+    assert f.internal_transfers['item:o'] == pytest.approx(25) and f.net_outputs['item:o'] == pytest.approx(15)
+    (row,) = f.disposal
+    assert row.recipe == 'void-o' and row.machines == pytest.approx(15 / 5)
+    # Each block alone would vent all 40 o; the factory vents 15.
+    a = solve_plan(store, 'led', blocks=['a'], detail='full', save_results=False).blocks[0].result
+    assert a is not None and a.disposal[0].machines == pytest.approx(40 / 5)
+    assert f.totals_with_disposal.machines == pytest.approx(f.totals.machines + 3)
+
+
+def test_save_results_refreshes_fingerprint(store: PlanStore, db: Database) -> None:
+    db.raw_sha256 = 'proto-1'
+    store.save('fp', [block('m', targets={'b': 1}, lines=[{'recipe': 'ab', 'modules': ['pm1', 'pm1']}])])
+    db.progress['tick'] = 99
+    assert store.view('fp').stale == 'stage_changed'
+    r = solve_plan(store, 'fp')
+    assert r.stale == 'stage_changed' and r.warnings and r.revision == 2
+    view = store.view('fp')
+    assert view.stale == 'fresh' and view.result_stale == {'m': 'fresh'} and view.plan.revision == 2
+    assert solve_plan(store, 'fp', save_results=False).revision == 2
+
+
+def test_factory_module_and_beacon_totals(store: PlanStore) -> None:
+    line = {'recipe': 'ab', 'modules': ['pm1', 'pm1'], 'beacons': [{'beacon': 'bcn', 'modules': ['spd']}]}
+    fixed = {**line, 'fixed_machines': 1.5}
+    store.save('mods', [block('x', targets={}, lines=[fixed]), block('y', targets={}, lines=[fixed])])
+    f = solve_plan(store, 'mods').factory
+    assert f.module_inventory['pm1'].count == pytest.approx(6) and f.module_inventory['pm1'].count_ceil == 8
+    assert f.totals.beacon_count == pytest.approx(3) and f.totals.beacon_count_by_type == {'bcn': pytest.approx(3)}
+
+
+@pytest.mark.realdata
+def test_real_methanol_feeds_lubricant(tmp_path: Path, real_db: Database, force: str) -> None:
+    store = PlanStore(tmp_path, real_db)
+    blocks = [
+        BlockInput.model_validate({'id': 'methanol', 'request': {'targets': {'nullius-methanol': {'from': ['lube']}}}}),
+        BlockInput.model_validate(
+            {'id': 'lube', 'request': {'targets': {'nullius-lubricant': 10}, 'lines': ['nullius-lubricant']}}
+        ),
+    ]
+    store.save('lube', blocks, force=force)
+    r = solve_plan(store, 'lube')
+    assert r.order == ['lube', 'methanol'] and r.factory.complete
+    lube = next(b for b in r.blocks if b.id == 'lube')
+    methanol = next(b for b in r.blocks if b.id == 'methanol')
+    need = lube.imports['fluid:nullius-methanol']
+    assert methanol.resolved_targets['nullius-methanol'] == pytest.approx(need)
+    assert 'fluid:nullius-methanol' not in r.factory.net_inputs
+    f = r.factory
+    for b in r.blocks:
+        assert b.status == 'optimal'
+    totals_out = sum(sum(b.achieved_targets.values()) + sum(b.surplus.values()) for b in r.blocks)
+    totals_in = sum(sum(b.imports.values()) + sum(b.consume.values()) for b in r.blocks)
+    assert totals_out - totals_in == pytest.approx(sum(f.net_outputs.values()) - sum(f.net_inputs.values()))

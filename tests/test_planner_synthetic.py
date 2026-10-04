@@ -6,6 +6,7 @@ import pytest
 
 from recipe_mcp.database import JSON, Database
 from recipe_mcp.planner import BeaconSpec, Defaults, LineSpec, drain_watts, machine_stats, plan, production_matrix
+from recipe_mcp.planner.lp import LPBuilder
 from recipe_mcp.planner.schema import PlanResult
 
 
@@ -250,3 +251,20 @@ def test_efficient_preference_counts_the_default_drain() -> None:
     }
     s = machine_stats(Database(raw=raw), 'r', defaults=Defaults(machine_preference='efficient'), validate_stage=False)
     assert s.machine == 'explicit'
+
+
+def test_lp_builder_maps_names_both_ways() -> None:
+    lp = LPBuilder()
+    x = lp.col('x:0', cost=1)
+    y = lp.col('y', cost=2, ub=3)
+    lp.add_eq('balance', {x: 1, y: 1}, 4)
+    lp.add_ub('cap', {x: 1}, 1)
+    res = lp.solve()
+    assert lp.cols[lp.index['y']] == 'y' and lp.eq_names == ['balance'] and lp.ub_names == ['cap']
+    assert res.x[x] == approx(1) and res.x[y] == approx(3)
+    with pytest.raises(ValueError, match='Duplicate'):
+        lp.col('y')
+
+
+def test_plan_reports_optimal_status(db: Database) -> None:
+    assert plan(db, {'petro': 100}, OIL, validate_stage=False).status == 'optimal'

@@ -266,7 +266,11 @@ class SnapshotProvenance(BaseModel):
     exported_at: str | None
 
 
+PlanStatus = Literal['optimal', 'infeasible', 'time_limit']
+
+
 class PlanResult(Report):
+    status: PlanStatus = 'optimal'
     solver: SolverName
     per: Per
     force: str | None

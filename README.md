@@ -73,7 +73,7 @@ uv run --directory recipe-mcp recipe-mcp-cli validate_plan '{"recipe_rates":{"nu
 | `machine_stats` | One recipe in one machine: effective speed/productivity/power multipliers, per-machine flow, machines for a rate |
 | `production_matrix` | Item × line stoichiometric matrix, rank, item roles and determinacy diagnostics |
 
-Names are internal prototype IDs; localized names come back as raw locale keys. `net_balance` ignores modules and force productivity bonuses and does not treat fluids at different temperatures as interchangeable.
+Every result is a pydantic model, so each tool publishes an output schema and returns `structuredContent` alongside the JSON text. Names are internal prototype IDs; localized names come back as raw locale keys. `net_balance` ignores modules and force productivity bonuses and does not treat fluids at different temperatures as interchangeable.
 
 ## Research gating
 
@@ -94,7 +94,7 @@ A machine or module counts as buildable when its item's crafting recipe is usabl
 
 ## Production planning (`recipe_mcp.planner`)
 
-A line is `{recipe, machine?, modules?, beacons?: [{beacon, count, modules, per_machine?}], fixed_machines?, max_machines?, cost_weight?}`; `recipe` may be `mining:<resource>`. A bare recipe name is also accepted.
+A line is `{recipe, id?, machine?, modules?, beacons?: [{beacon, count, modules, per_machine?}], fixed_machines?, max_machines?, cost_weight?, ignore_module_rules?}`; `recipe` may be `mining:<resource>`. A bare recipe name is also accepted. Line specs, `defaults` and beacons are pydantic models (`LineSpec`, `Defaults`, `BeaconSpec`): the tools publish them in their input schema, and unknown keys are rejected rather than ignored.
 
 Effects follow the 2.0 prototype docs:
 
@@ -124,7 +124,7 @@ Not modeled:
 - Belt and pipe throughput.
 - Fluid-resource depletion (yield is taken as 100%).
 - Mining drill drain (0 unless declared).
-- Fuel chains of burner/heat machines. Their fuel is reported per line as `<energy type>_fuel_MW` and in total as `non_electric_fuel_MW`.
+- Fuel chains of burner/heat machines. Their fuel is reported per line as `fuel_MW` (next to `energy_type`) and in total as `non_electric_fuel_MW`.
 
 Fluid temperatures only raise warnings.
 
@@ -195,9 +195,11 @@ recipe-mcp/
 │   ├── server.py                MCP server: tool registration (create_server), recipe-mcp-server entry
 │   ├── cli.py                   CLI: recipe-mcp-cli entry
 │   ├── __main__.py              python -m recipe_mcp → server
-│   ├── paths.py                 project root, data directory, dump/progress paths
+│   ├── paths.py                 project root, data directory, dump/progress paths, exporter defaults
+│   ├── models.py                pydantic models of query results (raw prototypes and the snapshot stay JSON)
 │   ├── database.py              prototype index and save-based research gating
 │   ├── planner/                 production planning
+│   │   ├── schema.py            pydantic models: line specs, defaults, normalised lines, solutions, results
 │   │   ├── model.py             line model: machines, modules, beacons, productivity, power, gating, discovery
 │   │   ├── lp.py                LP solver (HiGHS)
 │   │   ├── matrix.py            exact matrix solver and stoichiometric analysis
@@ -221,7 +223,7 @@ uv run --directory recipe-mcp ruff check
 uv run --directory recipe-mcp ruff format
 ```
 
-Tests marked `realdata` skip when `data/` has no compatible export. They use force `faction-a632079`; set `RECIPE_MCP_TEST_FORCE` to override. mypy runs with `disallow_untyped_defs` over `src`, `tests` and `scripts`. Command lines are built with click.
+Tests marked `realdata` skip when `data/` has no compatible export. They use force `faction-a632079`; set `RECIPE_MCP_TEST_FORCE` to override. mypy runs with `disallow_untyped_defs` and the pydantic plugin over `src`, `tests` and `scripts`. Command lines are built with click.
 
 ## Methanol analysis script
 

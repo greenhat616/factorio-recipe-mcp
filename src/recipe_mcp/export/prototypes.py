@@ -59,12 +59,12 @@ def main(exe: Path, mods: Path) -> None:
     manifest['loaded_mod_versions'] = dict(re.findall(r'Loading mod ([^ ]+) ([^ ]+) \(data\.lua\)', log_text))
     db = Database(raw=raw)
     (work / 'recipes.json').write_text(
-        json.dumps([db.recipe(n) for n in sorted(db.recipes)], ensure_ascii=False, indent=2),
+        json.dumps([db.recipe(n).model_dump(mode='json') for n in sorted(db.recipes)], ensure_ascii=False, indent=2),
         encoding='utf-8',
     )
     (work / 'technologies.json').write_text(
         json.dumps(
-            [db.technology(n) for n in sorted(raw.get('technology', {}))],
+            [db.technology(n).model_dump(mode='json') for n in sorted(raw.get('technology', {}))],
             ensure_ascii=False,
             indent=2,
         ),

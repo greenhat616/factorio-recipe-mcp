@@ -778,6 +778,7 @@ dependencies = [
     { name = "click" },
     { name = "mcp" },
     { name = "numpy" },
+    { name = "pydantic" },
     { name = "scipy" },
 ]
 
@@ -793,6 +794,7 @@ requires-dist = [
     { name = "click", specifier = "==8.5.0" },
     { name = "mcp", specifier = "==1.30.0" },
     { name = "numpy", specifier = "==2.5.3" },
+    { name = "pydantic", specifier = "==2.13.5" },
     { name = "scipy", specifier = "==1.18.1" },
 ]
 

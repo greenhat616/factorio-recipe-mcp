@@ -5,7 +5,8 @@ from typing import Any
 import pytest
 
 from recipe_mcp.database import JSON, Database
-from recipe_mcp.planner import drain_watts, machine_stats, plan, production_matrix
+from recipe_mcp.planner import BeaconSpec, Defaults, LineSpec, drain_watts, machine_stats, plan, production_matrix
+from recipe_mcp.planner.schema import PlanResult
 
 
 def fluid(n: str, a: float) -> JSON:
@@ -111,18 +112,18 @@ def approx(v: float, rel: float = 1e-9) -> Any:
     return pytest.approx(v, rel=rel, abs=rel)
 
 
-def by_recipe(result: JSON, key: str = 'crafts') -> dict[str, Any]:
-    return {line['recipe']: line[key] for line in result['lines']}
+def by_recipe(result: PlanResult, key: str = 'crafts') -> dict[str, Any]:
+    return {line.recipe: getattr(line, key) for line in result.lines}
 
 
 def test_matrix_closed_form(db: Database) -> None:
     r = plan(db, {'petro': 100}, OIL, solver='matrix', validate_stage=False)
     assert by_recipe(r) == {'aop': approx(A), 'hc': approx(0.625 * A), 'lc': approx(2.125 * A)}
-    assert r['imports']['fluid:crude'] == approx(100 * A)
+    assert r.imports['fluid:crude'] == approx(100 * A)
     assert by_recipe(r, 'machines')['aop'] == approx(5 * A)
     # Electric drain defaults to energy_usage / 30 when not declared.
-    assert r['totals']['power_MW'] == approx(5 * A * 0.42 + 2 * 0.625 * A * 0.217 + 2 * 2.125 * A * 0.217)
-    assert r['max_balance_error'] < 1e-9 and r['matrix']['degrees_of_freedom'] == 0
+    assert r.totals.power_MW == approx(5 * A * 0.42 + 2 * 0.625 * A * 0.217 + 2 * 2.125 * A * 0.217)
+    assert r.max_balance_error < 1e-9 and r.matrix is not None and r.matrix.degrees_of_freedom == 0
 
 
 def test_lp_agrees_with_matrix_without_alternatives(db: Database) -> None:
@@ -137,7 +138,7 @@ def test_per_minute_units(db: Database) -> None:
 
 def test_matrix_byproduct_becomes_surplus_unknown(db: Database) -> None:
     r = plan(db, {'petro': 55}, ['aop', 'hc'], solver='matrix', validate_stage=False)
-    assert r['surplus']['fluid:light'] == approx(45 + 25 / 40 * 30)
+    assert r.surplus['fluid:light'] == approx(45 + 25 / 40 * 30)
 
 
 def test_matrix_diagnostics(db: Database) -> None:
@@ -146,21 +147,21 @@ def test_matrix_diagnostics(db: Database) -> None:
     with pytest.raises(ValueError, match='underdetermined'):
         plan(db, {'gear': 1}, ['gear-a', 'gear-b'], solver='matrix', validate_stage=False)
     pm = production_matrix(db, ['gear-a', 'gear-b'], {'gear': 1})
-    assert pm['square_system']['degrees_of_freedom'] == 1 and pm['matrix'] == [[1, 1], [-2, -1]]
+    assert pm.square_system.degrees_of_freedom == 1 and pm.matrix == [[1, 1], [-2, -1]]
 
 
 def test_lp_route_choice_and_shadow_price(db: Database) -> None:
     g = plan(db, {'gear': 1}, ['gear-a', 'gear-b'], validate_stage=False)
-    assert [line['recipe'] for line in g['lines']] == ['gear-a']
+    assert [line.recipe for line in g.lines] == ['gear-a']
     g = plan(db, {'gear': 1}, ['gear-a', 'gear-b'], objective='imports', validate_stage=False)
-    assert [line['recipe'] for line in g['lines']] == ['gear-b']
+    assert [line.recipe for line in g.lines] == ['gear-b']
     # 1 plate import + 4 machine-seconds * 1e-3 machine weight.
-    assert g['shadow_prices']['item:gear'] == approx(1 + 4e-3, 1e-6)
+    assert g.shadow_prices is not None and g.shadow_prices['item:gear'] == approx(1 + 4e-3, 1e-6)
 
 
 def test_fixed_machines_pin_a_line(db: Database) -> None:
     g = plan(
-        db, {'gear': 1}, [{'recipe': 'gear-b', 'fixed_machines': 2}, 'gear-a'], solver='matrix', validate_stage=False
+        db, {'gear': 1}, [LineSpec(recipe='gear-b', fixed_machines=2), 'gear-a'], solver='matrix', validate_stage=False
     )
     assert by_recipe(g)['gear-a'] == approx(0.5)
 
@@ -170,22 +171,22 @@ def test_modules_and_beacons(db: Database) -> None:
         db,
         'aop',
         modules=['spd', 'prod'],
-        beacons=[{'beacon': 'bcn', 'count': 2, 'modules': ['spd', 'spd']}],
+        beacons=[BeaconSpec(beacon='bcn', count=2, modules=['spd', 'spd'])],
         validate_stage=False,
     )
     # Each beacon: module effect x distribution_effectivity 0.5 x profile[2 beacons] 0.7071.
-    assert s['speed_multiplier'] == approx(1 + 0.5 - 0.15 + 2 * 2 * 0.5 * 0.5 * 0.7071)
-    assert s['productivity'] == approx(0.1)
-    assert s['per_machine']['fluid:petro'] == approx(55 * 1.1 * s['speed_multiplier'] / 5)
-    assert s['consumption_multiplier'] == approx(1 + 0.7 + 2 * 2 * 0.7 * 0.5 * 0.7071)
-    assert s['power_per_machine_MW']['beacons'] == approx(0.96)
+    assert s.speed_multiplier == approx(1 + 0.5 - 0.15 + 2 * 2 * 0.5 * 0.5 * 0.7071)
+    assert s.productivity == approx(0.1)
+    assert s.per_machine['fluid:petro'] == approx(55 * 1.1 * s.speed_multiplier / 5)
+    assert s.consumption_multiplier == approx(1 + 0.7 + 2 * 2 * 0.7 * 0.5 * 0.7071)
+    assert s.power_per_machine_MW.beacons == approx(0.96)
 
 
 def test_module_rules(db: Database) -> None:
     with pytest.raises(ValueError, match='not allowed by recipe'):
         machine_stats(db, 'hc', machine='plant', modules=['prod'], validate_stage=False)
     with pytest.raises(ValueError, match='not allowed by entity'):
-        machine_stats(db, 'aop', beacons=[{'beacon': 'bcn', 'modules': ['prod']}], validate_stage=False)
+        machine_stats(db, 'aop', beacons=[BeaconSpec(beacon='bcn', modules=['prod'])], validate_stage=False)
 
 
 def test_auto_discovery_revisits_recipe_skipped_as_catalyst_only() -> None:
@@ -247,5 +248,5 @@ def test_efficient_preference_counts_the_default_drain() -> None:
         },
         'technology': {},
     }
-    s = machine_stats(Database(raw=raw), 'r', defaults={'machine_preference': 'efficient'}, validate_stage=False)
-    assert s['machine'] == 'explicit'
+    s = machine_stats(Database(raw=raw), 'r', defaults=Defaults(machine_preference='efficient'), validate_stage=False)
+    assert s.machine == 'explicit'

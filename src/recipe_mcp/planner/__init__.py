@@ -20,6 +20,17 @@ modelled. Rates are expected values (probability and amount ranges averaged).
 """
 
 from .api import machine_stats, plan, production_matrix
-from .model import Planner, drain_watts, product_amount, watts
+from .model import Planner, drain_watts, watts
+from .schema import BeaconSpec, Defaults, LineSpec
 
-__all__ = ['Planner', 'drain_watts', 'machine_stats', 'plan', 'product_amount', 'production_matrix', 'watts']
+__all__ = [
+    'BeaconSpec',
+    'Defaults',
+    'LineSpec',
+    'Planner',
+    'drain_watts',
+    'machine_stats',
+    'plan',
+    'production_matrix',
+    'watts',
+]

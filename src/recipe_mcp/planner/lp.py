@@ -5,8 +5,7 @@ from collections.abc import Mapping, Sequence
 import numpy as np
 from scipy.optimize import linprog
 
-from ..database import JSON
-from .model import Line
+from .schema import Line, Solution, Weights
 
 
 def solve_lp(
@@ -17,11 +16,11 @@ def solve_lp(
     import_costs: Mapping[str, float],
     allow_surplus: bool,
     surplus_items: set[str],
-    weights: Mapping[str, float],
-) -> JSON:
-    keys = sorted({k for r in lines for k in r['balance']} | set(targets))
+    weights: Weights,
+) -> Solution:
+    keys = sorted({k for r in lines for k in r.balance} | set(targets))
     index = {k: i for i, k in enumerate(keys)}
-    produced = {k for r in lines for k, v in r['balance'].items() if v > 0}
+    produced = {k for r in lines for k, v in r.balance.items() if v > 0}
     importable = [
         k for k in keys if (k not in produced or k in imports) and k not in forbid_imports and k not in targets
     ]
@@ -29,46 +28,37 @@ def solve_lp(
     L, I, S = len(lines), len(importable), len(surplus_keys)  # noqa: E741
     A = np.zeros((len(keys), L + I + S))
     for j, r in enumerate(lines):
-        for k, v in r['balance'].items():
+        for k, v in r.balance.items():
             A[index[k], j] = v
     for j, k in enumerate(importable):
         A[index[k], L + j] = 1
     for j, k in enumerate(surplus_keys):
         A[index[k], L + I + j] = -1
     b = np.array([targets.get(k, 0.0) for k in keys])
-    c: list[float] = []
-    for r in lines:
-        per_craft_machines = 1 / r['crafts_per_machine']
-        mw = (
-            (r['active_W'] + r['drain_W'] + r['beacon_W']) / 1e6
-            if r['energy_type'] == 'electric'
-            else r['beacon_W'] / 1e6
-        )
-        c.append(r['cost_weight'] * per_craft_machines * (weights['machines'] + weights['power_MW'] * mw))
-    c += [weights['imports'] * import_costs.get(k, 1.0) for k in importable]
-    c += [weights['surplus']] * S
+    # Line variables are crafts per second, so per-machine costs scale by 1 / crafts_per_machine.
+    c = [r.cost_weight * (weights.machines + weights.power_MW * r.power_W / 1e6) / r.crafts_per_machine for r in lines]
+    c += [weights.imports * import_costs.get(k, 1.0) for k in importable]
+    c += [weights.surplus] * S
     bounds: list[tuple[float, float | None]] = []
     for r in lines:
-        if r['fixed_machines'] is not None:
-            v = r['fixed_machines'] * r['crafts_per_machine']
+        if r.fixed_machines is not None:
+            v = r.fixed_machines * r.crafts_per_machine
             bounds.append((v, v))
         else:
-            bounds.append((0, None if r['max_machines'] is None else r['max_machines'] * r['crafts_per_machine']))
+            bounds.append((0, None if r.max_machines is None else r.max_machines * r.crafts_per_machine))
     bounds += [(0, None)] * (I + S)
     res = linprog(c, A_eq=A, b_eq=b, bounds=bounds, method='highs')
     if not res.success:
         missing = sorted(k for k in targets if k not in produced and k not in importable)
-        raise ValueError(
-            f'LP infeasible: {res.message}'
-            + (
-                f'; no producing line for {missing}'
-                if missing
-                else '; check forbid_imports, fixed_machines/max_machines or allow_surplus'
-            )
+        hint = (
+            f'; no producing line for {missing}'
+            if missing
+            else '; check forbid_imports, fixed_machines/max_machines or allow_surplus'
         )
+        raise ValueError(f'LP infeasible: {res.message}{hint}')
     x = res.x.tolist()
     prices = dict(zip(keys, res.eqlin.marginals, strict=True)) if getattr(res, 'eqlin', None) is not None else {}
-    return dict(
+    return Solution(
         x=x[:L],
         imports=dict(zip(importable, x[L : L + I], strict=True)),
         surplus=dict(zip(surplus_keys, x[L + I :], strict=True)),

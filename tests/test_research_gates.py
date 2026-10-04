@@ -52,18 +52,18 @@ def test_gate_semantics(tmp_path: Path) -> None:
         },
     }
     d = Database(path=p, progress=snapshot)
-    assert d.availability('enabled-script')['state'] == 'unlocked'
-    assert d.availability('disabled-script')['state'] == 'script_disabled'
-    assert d.availability('locked')['state'] == 'locked'
-    assert d.availability('alternative')['usable_at_stage'] is True
-    assert d.technology('b')['state'] == 'available_to_research'
+    assert d.availability('enabled-script').state == 'unlocked'
+    assert d.availability('disabled-script').state == 'script_disabled'
+    assert d.availability('locked').state == 'locked'
+    assert d.availability('alternative').usable_at_stage is True
+    assert d.technology('b').state == 'available_to_research'
     snapshot['forces']['one']['technologies']['a']['researched'] = False
-    assert d.technology('b')['state'] == 'locked'
+    assert d.technology('b').state == 'locked'
     snapshot['forces']['one']['technologies']['b']['enabled'] = False
-    assert d.technology('b')['state'] == 'disabled'
-    assert Database(path=p, progress={}).availability('locked')['usable_at_stage'] is None
+    assert d.technology('b').state == 'disabled'
+    assert Database(path=p, progress={}).availability('locked').usable_at_stage is None
     snapshot['provenance']['prototype_raw_sha256'] = 'bad'
-    assert Database(path=p, progress=snapshot).availability('locked')['state'] == 'unknown'
+    assert Database(path=p, progress=snapshot).availability('locked').state == 'unknown'
 
 
 def test_unknown_names_raise_value_error() -> None:

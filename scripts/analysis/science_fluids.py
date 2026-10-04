@@ -13,6 +13,7 @@ from scipy.optimize import linprog
 from scipy.sparse import csc_matrix, eye, hstack
 
 from recipe_mcp.database import JSON, Database, amount
+from recipe_mcp.models import Construction
 from recipe_mcp.paths import DATA_DIR
 from recipe_mcp.planner import drain_watts, watts
 
@@ -29,24 +30,25 @@ def analyze(force: str | None, rate: float, power: bool = True) -> JSON:
         'nullius-' + x + '-pack' for x in ['geology', 'climatology', 'mechanical', 'electrical', 'chemical', 'physics']
     ]
     machine_choices = defaultdict(list)
-    verified_barrel_pumps = {}
+    verified_barrel_pumps: dict[str, Construction] = {}
     for kind in ['assembling-machine', 'furnace', 'rocket-silo']:
         for name, machine in db.raw.get(kind, {}).items():
             stage = db.machine_stage(name, force)
             # MCP's broad packaging-name filter also catches barrel-pump machines.
             # Verify their actual manufacturing recipe directly, without assuming
             # that a missing equipment mapping means the machine is available.
-            if stage['buildable_at_stage'] is None and name.startswith('nullius-barrel-pump-') and name in db.recipes:
+            if stage.buildable_at_stage is None and name.startswith('nullius-barrel-pump-') and name in db.recipes:
                 evidence = db.recipe(name, force)
-                if any(e['name'] == name and e['type'] == 'item' for e in evidence.get('results', [])):
-                    stage = dict(
+                if any(e['name'] == name and e['type'] == 'item' for e in evidence.results):
+                    stage = Construction(
                         machine=name,
-                        buildable_at_stage=evidence['availability']['usable_at_stage'],
+                        item=name,
+                        buildable_at_stage=evidence.availability.usable_at_stage,
                         manufacturing_recipes=[name],
-                        direct_recipe_evidence=evidence['availability'],
+                        reason=f'Verified by its own recipe, which is {evidence.availability.state}',
                     )
                     verified_barrel_pumps[name] = stage
-            if stage['buildable_at_stage'] is not True:
+            if stage.buildable_at_stage is not True:
                 continue
             if machine.get('energy_source', {}).get('type') not in ['electric', 'void']:
                 continue
@@ -55,7 +57,7 @@ def analyze(force: str | None, rate: float, power: bool = True) -> JSON:
 
     columns = []
     for name, recipe in sorted(db.recipes.items()):
-        if db.virtual(name) or db.availability(name, force)['usable_at_stage'] is not True:
+        if db.virtual(name) or db.availability(name, force).usable_at_stage is not True:
             continue
         if not recipe.get('results'):
             continue
@@ -173,11 +175,11 @@ def analyze(force: str | None, rate: float, power: bool = True) -> JSON:
 
     used_machines = sorted({r['machine'] for r in active if 'machine' in r})
     validation = db.validate_plan(rates, force, [n for n in used_machines if n not in verified_barrel_pumps])
-    validation['equipment'] += [verified_barrel_pumps[n] for n in used_machines if n in verified_barrel_pumps]
-    validation['valid_at_stage'] = validation['valid_at_stage'] and all(
-        e['buildable_at_stage'] is True for e in validation['equipment']
+    validation.equipment += [verified_barrel_pumps[n] for n in used_machines if n in verified_barrel_pumps]
+    validation.valid_at_stage = validation.valid_at_stage and all(
+        e.buildable_at_stage is True for e in validation.equipment
     )
-    if not validation['valid_at_stage']:
+    if not validation.valid_at_stage:
         raise RuntimeError('Stage validation failed')
     # Independently recalculate the base material balance with the MCP database.
     recalculated = db.balance(rates)
@@ -210,7 +212,7 @@ def analyze(force: str | None, rate: float, power: bool = True) -> JSON:
         reference_process_MW=float(result.fun) if power else None,
         balance_residual=error,
         independent_balance_residual=float(independent_error),
-        stage_validation=validation,
+        stage_validation=validation.model_dump(mode='json'),
         imported_resource_materials=resources,
         fluid_consumption=fluids,
         fluid_physical_inputs=dict(sorted(physical_input.items(), key=lambda x: -x[1])),

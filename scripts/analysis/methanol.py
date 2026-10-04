@@ -81,8 +81,8 @@ def solve(
     excluded = []
     for n, machine in pairs.items():
         if not theoretical and (
-            db.availability(n, selected)['usable_at_stage'] is not True
-            or db.machine_stage(machine, selected)['buildable_at_stage'] is not True
+            db.availability(n, selected).usable_at_stage is not True
+            or db.machine_stage(machine, selected).buildable_at_stage is not True
         ):
             excluded.append({'recipe': n, 'machine': machine})
             continue
@@ -112,7 +112,7 @@ def solve(
             configs = itertools.combinations_with_replacement(choices, slots)
         for config in configs:
             if not theoretical and any(
-                mod and db.item_stage(mod, selected)['buildable_at_stage'] is not True for mod in config
+                mod and db.item_stage(mod, selected).buildable_at_stage is not True for mod in config
             ):
                 continue
             effects: defaultdict[str, float] = defaultdict(float)
@@ -125,9 +125,7 @@ def solve(
                 for k in effects
             ):
                 continue
-            prod = effects['productivity'] + (
-                db.availability(n, selected).get('productivity_bonus', 0) if not theoretical else 0
-            )
+            prod = effects['productivity'] + (db.availability(n, selected).productivity_bonus if not theoretical else 0)
             speed = m['crafting_speed'] * max(0.2, 1 + effects['speed'])
             seconds = r.get('energy_required', 0.5) / speed
             active = (
@@ -165,7 +163,7 @@ def solve(
     for name in voidable:
         if not theoretical:
             void_recipe = 'nullius-void-' + name.removeprefix('nullius-')
-            if void_recipe not in db.recipes or db.availability(void_recipe, selected)['usable_at_stage'] is not True:
+            if void_recipe not in db.recipes or db.availability(void_recipe, selected).usable_at_stage is not True:
                 continue
         variants.append(dict(recipe='discard:' + name, balance={name: -1}, cost=0))
     materials = sorted({n for v in variants for n in v['balance']})
@@ -202,7 +200,7 @@ def solve(
             selected,
             sorted({r['machine'] for r in rows}),
             sorted({m for r in rows for m in r['modules']}),
-        )
+        ).model_dump(mode='json')
     )
     return dict(
         target_per_second=q,

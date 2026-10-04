@@ -8,6 +8,7 @@ dependencies = [
     "click==8.5.0",
     "mcp==1.30.0",
     "numpy==2.5.3",
+    "pydantic==2.13.5",
     "scipy==1.18.1",
 ]
 
@@ -62,6 +63,7 @@ known-first-party = ["recipe_mcp", "science_fluids", "zones"]
 
 [tool.mypy]
 python_version = "3.13"
+plugins = ["pydantic.mypy"]
 files = ["src", "tests", "scripts"]
 # Scripts are run directly and import their siblings by bare module name.
 mypy_path = ["src", "scripts/analysis", "scripts/pressure_report"]

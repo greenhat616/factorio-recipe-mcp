@@ -6,32 +6,36 @@ from typing import Any
 import numpy as np
 from numpy.typing import NDArray
 
-from ..database import JSON
-from .model import Line
+from .schema import ItemRole, Line, MatrixInfo, Solution
 
 # Unknown of the square system: ('line', line index) or ('import' | 'surplus', item key).
 Column = tuple[str, Any]
 
 
+def fixed_crafts(line: Line) -> float:
+    assert line.fixed_machines is not None
+    return line.fixed_machines * line.crafts_per_machine
+
+
 def recipe_matrix(lines: Sequence[Line]) -> tuple[list[str], NDArray[np.float64]]:
     """Items x lines net-per-craft matrix."""
-    keys = sorted({k for r in lines for k in r['balance']})
+    keys = sorted({k for r in lines for k in r.balance})
     A = np.zeros((len(keys), len(lines)))
     index = {k: i for i, k in enumerate(keys)}
     for j, r in enumerate(lines):
-        for k, v in r['balance'].items():
+        for k, v in r.balance.items():
             A[index[k], j] = v
     return keys, A
 
 
 def analyze_matrix(
     lines: Sequence[Line], targets: Mapping[str, float], imports: set[str], surplus_items: set[str]
-) -> tuple[list[str], list[Column], NDArray[np.float64], NDArray[np.float64], JSON, list[int]]:
+) -> tuple[list[str], list[Column], NDArray[np.float64], NDArray[np.float64], MatrixInfo, list[int]]:
     """Factory Planner style square system: unknown roles chosen from item roles."""
-    keys = sorted({k for r in lines for k in r['balance']} | set(targets))
-    produced = {k for r in lines for k, v in r['balance'].items() if v > 0}
-    consumed = {k for r in lines for k, v in r['balance'].items() if v < 0}
-    roles: dict[str, str] = {}
+    keys = sorted({k for r in lines for k in r.balance} | set(targets))
+    produced = {k for r in lines for k, v in r.balance.items() if v > 0}
+    consumed = {k for r in lines for k, v in r.balance.items() if v < 0}
+    roles: dict[str, ItemRole] = {}
     imp: list[str] = []
     sur: list[str] = []
     for k in keys:
@@ -47,8 +51,8 @@ def analyze_matrix(
             imp.append(k)
         if roles[k] == 'byproduct' or k in surplus_items:
             sur.append(k)
-    free_lines = [j for j, r in enumerate(lines) if r['fixed_machines'] is None]
-    fixed_lines = [j for j, r in enumerate(lines) if r['fixed_machines'] is not None]
+    free_lines = [j for j, r in enumerate(lines) if r.fixed_machines is None]
+    fixed_lines = [j for j, r in enumerate(lines) if r.fixed_machines is not None]
     index = {k: i for i, k in enumerate(keys)}
     cols: list[Column] = (
         [('line', j) for j in free_lines] + [('import', k) for k in imp] + [('surplus', k) for k in sur]
@@ -57,36 +61,36 @@ def analyze_matrix(
     b = np.array([targets.get(k, 0.0) for k in keys])
     for c, (kind, ref) in enumerate(cols):
         if kind == 'line':
-            for k, v in lines[ref]['balance'].items():
+            for k, v in lines[ref].balance.items():
                 M[index[k], c] = v
         else:
             M[index[ref], c] = 1 if kind == 'import' else -1
     for j in fixed_lines:
-        for k, v in lines[j]['balance'].items():
-            b[index[k]] -= v * lines[j]['fixed_machines'] * lines[j]['crafts_per_machine']
+        for k, v in lines[j].balance.items():
+            b[index[k]] -= v * fixed_crafts(lines[j])
     rank = int(np.linalg.matrix_rank(M)) if M.size else 0
-    info = dict(
+    info = MatrixInfo(
         items=len(keys),
         unknowns=len(cols),
         rank=rank,
         degrees_of_freedom=len(cols) - rank,
         roles=roles,
-        unknown_columns=[f'{k}:{lines[r]["id"] if k == "line" else r}' for k, r in cols],
+        unknown_columns=[f'{k}:{lines[r].id if k == "line" else r}' for k, r in cols],
     )
     return keys, cols, M, b, info, fixed_lines
 
 
 def solve_matrix(
     lines: Sequence[Line], targets: Mapping[str, float], imports: set[str], surplus_items: set[str], warnings: list[str]
-) -> JSON:
+) -> Solution:
     keys, cols, M, b, info, fixed_lines = analyze_matrix(lines, targets, imports, surplus_items)
-    label = info['unknown_columns']
-    if info['degrees_of_freedom'] > 0:
-        _, s, vt = np.linalg.svd(M)
-        null = vt[info['rank'] :]
+    label = info.unknown_columns
+    if info.degrees_of_freedom > 0:
+        _, _, vt = np.linalg.svd(M)
+        null = vt[info.rank :]
         directions = [{label[c]: round(float(v), 6) for c, v in enumerate(vec) if abs(v) > 1e-6} for vec in null]
         raise ValueError(
-            'Matrix underdetermined: ' + str(info['degrees_of_freedom']) + ' free direction(s). '
+            f'Matrix underdetermined: {info.degrees_of_freedom} free direction(s). '
             'Remove alternative recipes, add fixed_machines to a line, or drop surplus_items/imports. '
             f'Null space: {directions}'
         )
@@ -110,7 +114,7 @@ def solve_matrix(
         else:
             surplus_out[ref] = float(sol[c])
     for j in fixed_lines:
-        x[j] = lines[j]['fixed_machines'] * lines[j]['crafts_per_machine']
+        x[j] = fixed_crafts(lines[j])
     negative = [label[c] for c, v in enumerate(sol) if v < -1e-9]
     if negative:
         warnings.append(
@@ -118,7 +122,7 @@ def solve_matrix(
             + ', '.join(negative)
             + '. A negative import is an unused surplus; a negative surplus is a deficit; a negative line runs backwards.'
         )
-    return dict(
+    return Solution(
         x=x.tolist(),
         imports=imports_out,
         surplus=surplus_out,

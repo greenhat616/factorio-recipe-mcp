@@ -86,7 +86,7 @@ class Stage:
         self.added = closure(db, targets) - self.current
         self.unlocks: defaultdict[str, list[str]] = defaultdict(list)
         for n in sorted(self.added):
-            for pack in db.science(n, force)['science_packs']:
+            for pack in db.science(n, force).science_packs:
                 if pack not in PACKS:
                     raise ValueError(f'{n} needs post-physics pack {pack}')
             for e in db.raw['technology'][n].get('effects', []):
@@ -95,7 +95,7 @@ class Stage:
         self.allowed = {
             n
             for n in db.recipes
-            if not db.virtual(n) and (db.availability(n, force)['usable_at_stage'] is True or n in self.unlocks)
+            if not db.virtual(n) and (db.availability(n, force).usable_at_stage is True or n in self.unlocks)
         } - set(disabled)
         self.equipment = {}
         self.choices = defaultdict(list)

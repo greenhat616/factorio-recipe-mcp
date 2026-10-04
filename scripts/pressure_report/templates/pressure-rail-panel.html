@@ -1,0 +1,33 @@
+<section class="panel" id="rail" role="tabpanel" aria-labelledby="tab-rail" hidden>
+<div class="section-head"><div><h2>火车总线与工厂分区</h2><p class="legend">运大宗跨区缺口，区内用管网；让副产物回用尽量留在同一区。</p></div><select id="railStage" aria-label="铁路规划阶段"><option value="0">A 初入</option><option value="1">B 过渡</option><option value="2">C 碳截存</option></select></div>
+<div class="notice"><strong>选择运量依据：</strong>可使用原先的“工艺总需求 × 铁路比例”草案，也可改用“分区净输入 × 铁路比例”。后者已经抵消区内回用；分区边界仍是布局方案，未包含实际距离与逐站调度。铁路全部使用实际管内单位。</div>
+<div class="filters">
+<label>运量依据<select id="railSource"><option value="manual">工艺总需求 · 比例草案</option><option value="zone-rail">铁路 6 区 · 净输入合计</option><option value="zone-bus">总线 9 工段 · 净输入合计</option></select></label>
+<label>铁路运输比例预设<select id="railPreset"><option value="integrated">化工聚集 · 部分跨区（草案）</option><option value="remote">选定干线 100% · 其余管网</option><option value="local">尽量就地 · 仅火山气走铁路</option><option value="custom">自定义铁路比例</option></select></label>
+<label>流体车厢<select id="railWagon"><option value="auto">按科技自动选择</option><option value="1">1 型 · 25,000</option><option value="2">2 型 · 80,000</option><option value="3">3 型 · 250,000</option></select></label>
+<label>每列流体车厢数<input id="railCars" type="number" min="1" max="32" step="1" value="4"></label>
+<label>每次发车装载率（%）<input id="railFill" type="number" min="1" max="100" step="1" value="100"></label>
+<label>全程往返周期（秒，含装卸排队）<input id="railCycle" type="number" min="1" max="7200" step="1" value="180"></label>
+<label>车队有效可用率（%）<input id="railAvailability" type="number" min="1" max="100" step="1" value="85"></label>
+<label>每车厢装卸泵数<input id="railPumps" type="number" min="1" max="3" step="1" value="2"></label>
+<label>每站额外停靠 / 清空时间（秒）<input id="railClearance" type="number" min="0" max="600" step="1" value="15"></label>
+<label>站台最高占用率（%）<input id="railStationUtil" type="number" min="1" max="100" step="1" value="80"></label>
+<label>收货端覆盖断供时间（秒）<input id="railBuffer" type="number" min="0" max="7200" step="1" value="120"></label>
+<label>运量清单<select id="railFilter"><option value="suggested">建议关注的干线</option><option value="active">有铁路运量的流体</option><option value="all">所有流体（可逐项配置）</option></select></label>
+</div>
+<p id="railError" class="error" role="status"></p><p id="railSpec" class="hint"></p>
+<div class="detail-grid" id="railStats"></div><p id="railWarning" class="hint"></p>
+<div class="table-wrap"><table><thead><tr><th>流体 / 建议流向</th><th>铁路比例 %</th><th>实际运量 /s</th><th>重载发车 /min</th><th>单线发车间隔 s</th><th>专用列车数</th><th>装 / 卸站台</th><th>收货缓冲容量</th></tr></thead><tbody id="railRows"></tbody></table></div>
+<p class="hint">每行汇总一种流体，以一对供需站估算。分区净物流可能对应多个供货/收货区，表中车队与站台仅为汇总估计，实施前必须按逐站路线拆分；逐站取整可能需要更多设备。站台不包含候车线；缓冲至少容纳一列计划载荷。</p>
+<details><summary>铁路计算公式与约束</summary><div class="formula">载荷 P = 车厢容量 × 车厢数 × 装载率<br>流量 Q = 所选运量依据 × 铁路比例<br>依据可选工艺总需求（火山气用外供量），或各分区净输入合计<br>每分钟重载发车 = 60Q/P；单路线发车间隔 = P/Q<br>单端服务时间 D = P ÷（车厢数 × 每厢泵数 × 有效泵速）+ 额外停靠时间<br>计算周期 T = max（填写的全程往返周期，2D）<br>专用列车数 = ceil（Q × T ÷ P ÷ 车队可用率）<br>每端站台 = ceil（Q × D ÷ P ÷ 站台占用率）<br>收货缓冲 = max（P，Q × 覆盖断供时间）</div><p class="hint">装卸为理想并联泵估算，实际流速还受车厢存量、缓冲罐和连接方式影响。默认未计信号块冲突、交叉口、坡道与机车加速；不要把频次直接当成已验证的轨道吞吐。</p></details>
+<h3 style="margin-top:24px">分区草图 · 六个生产区 + 分散站场</h3>
+<div class="recommendations">
+<article class="recommendation"><div class="step">01 / 火山气矿区 → 碳源化工区</div><h3>先保留原气输入，预留源头分离</h3><p>默认运输原火山气，模型按外部开采量计。若矿区稳定且空间充足，可把分离与压缩前移，仅输出 CO / CO₂ 等目标产物；改成这种布局后要重算矿区与主厂的分区净流量，不能同时把原气和全部分离产物都算作必运量。</p></article>
+<article class="recommendation"><div class="step">02 / 水、热、空分与电解公用区</div><h3>制汽—电解—冷凝放在一起</h3><p>靠水与热源建公用工程。压缩 H₂、N₂、O₂、氩作为输出；空气就地取用，蒸汽、纯水、废水尽量在管网内闭合。初期制氢非常大，优先贴近化工区或给氢一条独立运输走廊。</p></article>
+<article class="recommendation"><div class="step">03 / CO、CO₂、甲烷与石墨碳源区</div><h3>把碳循环做成一个改造单元</h3><p>火山气分离、CO₂ 加氢、甲烷裂解先集中。碳截存后就地插入 CO₂ 电解与碳沉积，旧加氢线转备，减少 CO / CO₂ 往返。此区与冶金、有机化工直接接驳，避免所有副产物流体绕中央站。</p></article>
+<article class="recommendation"><div class="step">04 / 冶金与矿物加工区</div><h3>优先运矿物与金属固体</h3><p>铁、铝、钢、硅工艺按共用副产物分组；需要的压缩氢、氩就近接收。冶金副产 CO / CO₂ 返回碳源区，硅工艺的氢与氯优先内部回用。不要为单条小支线强制安排整列流体车。</p></article>
+<article class="recommendation"><div class="step">05 / 盐氯、酸碱与有机化工区</div><h3>按副产物耦合，而不是按每种液体分厂</h3><p>盐氯电解、酸碱与耗氯工艺相邻；烯烃、聚合物及副产甲烷工艺相邻。远距离优先运输压缩气体和较稳定的大宗中间液体；酸、氯、氯化氢若在同区闭环，通常无需接入全厂铁路。</p></article>
+<article class="recommendation"><div class="step">06 / 电子、机械与科研终端区</div><h3>用固体物流收束科研供应</h3><p>电子、机械和科研末端优先接收金属、塑料与其他固体中间品；少数确有需求的液体另设支站。旧科研瓶线保留旁路接驳，新配方切入时不必重建整条流体干线。</p></article>
+</div>
+<details open><summary>站场与调度：两条走廊，比一个中央总站更易扩建</summary><p><strong>大宗走廊：</strong>火山气矿区 ↔ 碳源区，以及公用工程 ↔ 碳源/冶金。给高频原气与氢气分散出入口，避免共用单个咽喉。<strong>综合走廊：</strong>化工中间品、冶金固体与科研供应，按需要接入各消费区。</p><p>供应站设置本地工艺的最低保留库存，再放行出口；接收站用低液位请求、较高液位取消请求的回差。以完整一列的装卸能力和缓冲为基本单元，按需求设站点列车上限，站外安排候车空间，避免在正线等货。</p><p>副产物供应站优先于专门生产站；消纳不足时由本地储罐与排放兜底，避免整区停机。机械瓶 2 过渡期先保证氢车队，碳截存后将闲置车队与站台迁给 CO / CO₂ 或其他扩张支线。</p></details>
+</section>

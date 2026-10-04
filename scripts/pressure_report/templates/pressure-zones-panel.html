@@ -1,0 +1,17 @@
+<section class="panel" id="zones" role="tabpanel" aria-labelledby="tab-zones" hidden>
+<div class="section-head"><div><h2>分区施工清单</h2><p class="legend">从已求解的配方出发，列出每区要接什么、送什么、建哪些工厂。</p></div><div class="toolbar"><button id="zoneToRail">用净流量估算铁路</button><button id="zoneExport">导出当前区 JSON</button></div></div>
+<div class="filters"><label>布局粒度<select id="zoneLayout"><option value="rail">铁路 · 6 个生产区</option><option value="bus">总线 · 9 个相邻工段</option></select></label><label>科技与路线阶段<select id="zoneStage"><option value="0">A 初入</option><option value="1">B 过渡</option><option value="2">C 碳截存</option></select></label><label>输入输出筛选<select id="zoneMaterialType"><option value="all">全部物料</option><option value="fluid">仅流体</option><option value="item">仅固体 / 箱 / 桶</option></select></label></div>
+<div class="notice"><strong>分区边界是设计方案，净流量来自实际配方。</strong>铁路方案合并高频互供工段；总线方案展开为 9 个相邻工段。均按所选区全部配方抵消内部供需，计算净输入输出。未重新优化配方，也未优化区位或逐站调度。所有流体用实际单位/s，物品保持物品/箱/桶的原型单位/s。</div>
+<p class="legend" id="zoneStatus" role="status"></p><div class="zone-map" id="zoneMap" aria-label="选择生产分区"></div>
+<div id="zoneHeading"></div><div class="zone-station" id="zoneConnections"></div>
+<div class="zone-io"><section><h3>输入 · 抵消区内产出后仍需补入</h3><div class="table-wrap"><table><thead><tr><th>物料 / 可用供给池</th><th>净输入 /s</th></tr></thead><tbody id="zoneInputs"></tbody></table></div></section><section><h3>输出 · 满足区内消耗后的余量</h3><div class="table-wrap"><table><thead><tr><th>物料 / 需求区</th><th>净输出 /s</th></tr></thead><tbody id="zoneOutputs"></tbody></table></div></section></div>
+<p class="hint">“供给池”列出能供应该物料的区，不代表已把运输量分配给每一对站点。空箱、空桶、包装物也按真实配方计入；箱装物品按箱/s 显示，不与散件相加。</p>
+<details><summary>本区回用与就地排放</summary><p class="hint">回用量是区内总输入与总输出的重叠量，包含包装、压缩和解压转换，不是跨区运输量。排放设备放在该物料净过剩的工段，按现有排放配方总速率分摊。</p><div class="zone-io"><section><h3>内部供需抵消（当前物料筛选）</h3><div class="table-wrap"><table><thead><tr><th>物料</th><th>抵消量 /s</th></tr></thead><tbody id="zoneReuse"></tbody></table></div></section><section><h3>就地处理</h3><div class="table-wrap"><table><thead><tr><th>物料</th><th>排放 /s</th></tr></thead><tbody id="zoneDisposal"></tbody></table></div></section></div></details>
+<h3 style="margin-top:22px">需要哪些工厂</h3><p class="legend" id="zoneEquipmentSummary"></p><div id="zoneEquipment" class="zone-equipment"></div>
+<p class="hint">“建造参考”按工段内每条配方分别向上取整，含分散到产气/用气点的压缩与解压设备。未计运输泵、矿机、发电设备、插入器及扩建超市；设备本身被科研配方消耗时，其制造配方会出现在下方。</p>
+<div class="section-head" style="margin-top:22px"><h3>本区实际配方</h3><span class="legend" id="zoneRecipeCount"></span></div>
+<div class="filters"><label>搜索配方 / 产物 / 设备<input id="zoneRecipeSearch" type="search" placeholder="例如：石墨、electrolysis、氢"></label><label>配方变化（与 A 同区比较）<select id="zoneRecipeFilter"><option value="active">当前方案活跃</option><option value="new">新增启用</option><option value="removed">停用 / 可转备用</option></select></label><label>工段<select id="zoneWorkshop"><option value="all">本区全部工段</option></select></label></div>
+<div class="zone-recipe-scroll" id="zoneRecipes"></div>
+<details><summary>铁路与总线的落地方式</summary><p><strong>铁路：</strong>六区按独立供需站接入。原料输入、成品输出、副产物返回分别留缓冲与候车空间；流体站和固体站分开。火山气优先送碳源区，但科研区还需要少量原气。对于回收蒸汽、大量纯水/酸碱，优先让相关区相邻并直接铺管，不强制全部装车。</p><p><strong>总线：</strong>九工段推荐排列为“公用工程—碳源—盐氯—有机”和“矿物—冶金—电子—机械—科研”两条相邻带。跨带使用压缩氢、CO、CO₂、酸碱及固体中间品支线。回流管沿来路返回，蒸汽与冷凝水单独局部回路；不要将所有液体都铺成贯穿全厂的母管。</p><p><strong>合并区的代价：</strong>铁路方案中的冶金区和化工区规模很大，可保留内部工段分块、共用站场和管网。拆成独立远端工厂时切到 9 工段查看新增的运输接口。净流量表本身不包含管长、距离、温度约束或站场瓶颈。</p></details>
+<p class="hint"><a href="../recipe-mcp/data/pressure-zones.json">全部分区净平衡与配方分配数据</a> · 全部 8 条路线、两种布局均核对了物料平衡、配方速率、机器等效量和功率守恒。</p>
+</section>

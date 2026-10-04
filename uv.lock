@@ -775,6 +775,7 @@ name = "recipe-mcp"
 version = "0.2.0"
 source = { editable = "." }
 dependencies = [
+    { name = "click" },
     { name = "mcp" },
     { name = "numpy" },
     { name = "scipy" },
@@ -789,6 +790,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "click", specifier = "==8.5.0" },
     { name = "mcp", specifier = "==1.30.0" },
     { name = "numpy", specifier = "==2.5.3" },
     { name = "scipy", specifier = "==1.18.1" },

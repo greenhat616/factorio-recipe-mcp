@@ -1,6 +1,5 @@
 """Read a save COPY in an isolated benchmark, export force research via helper mod."""
 
-import argparse
 import hashlib
 import json
 import os
@@ -13,8 +12,10 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+import click
+
 from ..database import JSON
-from ..paths import DATA_DIR, PROGRESS, RAW_DUMP, WORKSPACE_ROOT
+from ..paths import DATA_DIR, FACTORIO_EXE, FACTORIO_MODS, PROGRESS, RAW_DUMP, WORKSPACE_ROOT
 
 
 def sha(path: str | Path) -> str:
@@ -45,18 +46,29 @@ def signature(recipe: JSON, runtime: bool = False) -> tuple[Any, ...]:
     )
 
 
-def main() -> None:
-    ap = argparse.ArgumentParser(prog='recipe-mcp-export-save', description=__doc__)
-    ap.add_argument('--save', help='Explicit save path; defaults to the newest .zip in Factorio/saves')
-    ap.add_argument(
-        '--factorio', default=r'D:\Program Files (x86)\Steam\steamapps\common\Factorio\bin\x64\factorio.exe'
-    )
-    ap.add_argument('--mods', default=str(Path.home() / 'AppData/Roaming/Factorio/mods'))
-    args = ap.parse_args()
-    mods = Path(args.mods)
-    source = (
-        Path(args.save) if args.save else max((mods.parent / 'saves').glob('*.zip'), key=lambda p: p.stat().st_mtime_ns)
-    )
+@click.command(help=__doc__)
+@click.option(
+    '--save',
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    help='Explicit save path; defaults to the newest .zip in Factorio/saves.',
+)
+@click.option(
+    '--factorio',
+    'exe',
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    default=FACTORIO_EXE,
+    show_default=True,
+    help='Factorio executable.',
+)
+@click.option(
+    '--mods',
+    type=click.Path(exists=True, file_okay=False, path_type=Path),
+    default=FACTORIO_MODS,
+    show_default=True,
+    help='Mods directory whose mod-list.json and settings are used.',
+)
+def main(save: Path | None, exe: Path, mods: Path) -> None:
+    source = save or max((mods.parent / 'saves').glob('*.zip'), key=lambda p: p.stat().st_mtime_ns)
     work = Path(tempfile.mkdtemp(prefix='progress-', dir=DATA_DIR))
     local_mods = work / 'mods'
     local_mods.mkdir()
@@ -105,7 +117,6 @@ def main() -> None:
         bad = z.testzip()
     if bad:
         raise RuntimeError(f'Invalid save-copy archive: {bad}')
-    exe = Path(args.factorio)
     config = work / 'config.ini'
     config.write_text(
         f'[path]\nread-data={exe.parents[2].as_posix()}/data\nwrite-data={work.as_posix()}\n', encoding='utf-8'

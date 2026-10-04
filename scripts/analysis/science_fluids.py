@@ -4,10 +4,10 @@ Continuous, no-module reference plan minimizing process electricity. Mining,
 transport, power generation and mall production are outside the boundary.
 """
 
-import argparse
 import json
 from collections import defaultdict
 
+import click
 import numpy as np
 from scipy.optimize import linprog
 from scipy.sparse import csc_matrix, eye, hstack
@@ -221,14 +221,13 @@ def analyze(force: str | None, rate: float, power: bool = True) -> JSON:
     )
 
 
-if __name__ == '__main__':
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--force', default='faction-a632079')
-    parser.add_argument('--rate', type=float, default=150)
-    parser.add_argument('--machines', action='store_true')
-    args = parser.parse_args()
-    report = analyze(args.force, args.rate, not args.machines)
-    output = DATA_DIR / ('science-fluid-machine-reference.json' if args.machines else 'science-fluid-reference.json')
+@click.command(help=__doc__)
+@click.option('--force', default='faction-a632079', show_default=True, help='Force from the save snapshot.')
+@click.option('--rate', type=float, default=150, show_default=True, help='Each science pack per second.')
+@click.option('--machines', is_flag=True, help='Minimise machine count instead of process electricity.')
+def main(force: str, rate: float, machines: bool) -> None:
+    report = analyze(force, rate, not machines)
+    output = DATA_DIR / ('science-fluid-machine-reference.json' if machines else 'science-fluid-reference.json')
     output.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding='utf-8')
     print(
         json.dumps(
@@ -242,3 +241,7 @@ if __name__ == '__main__':
             indent=2,
         )
     )
+
+
+if __name__ == '__main__':
+    main()

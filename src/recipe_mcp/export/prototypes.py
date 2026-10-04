@@ -1,6 +1,5 @@
 """Export the active Factorio prototype set without touching the running game."""
 
-import argparse
 import hashlib
 import json
 import re
@@ -8,18 +7,29 @@ import subprocess
 from datetime import UTC, datetime
 from pathlib import Path
 
+import click
+
 from ..database import JSON, Database
-from ..paths import DATA_DIR
+from ..paths import DATA_DIR, FACTORIO_EXE, FACTORIO_MODS
 
 
-def main() -> None:
-    ap = argparse.ArgumentParser(prog='recipe-mcp-export', description=__doc__)
-    ap.add_argument(
-        '--factorio', default=r'D:\Program Files (x86)\Steam\steamapps\common\Factorio\bin\x64\factorio.exe'
-    )
-    ap.add_argument('--mods', default=str(Path.home() / 'AppData/Roaming/Factorio/mods'))
-    args = ap.parse_args()
-    exe, mods = Path(args.factorio), Path(args.mods)
+@click.command(help=__doc__)
+@click.option(
+    '--factorio',
+    'exe',
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    default=FACTORIO_EXE,
+    show_default=True,
+    help='Factorio executable.',
+)
+@click.option(
+    '--mods',
+    type=click.Path(exists=True, file_okay=False, path_type=Path),
+    default=FACTORIO_MODS,
+    show_default=True,
+    help='Mods directory whose mod-list.json and settings are used.',
+)
+def main(exe: Path, mods: Path) -> None:
     work = DATA_DIR
     work.mkdir(exist_ok=True)
     config = work / 'config.ini'
@@ -49,10 +59,15 @@ def main() -> None:
     manifest['loaded_mod_versions'] = dict(re.findall(r'Loading mod ([^ ]+) ([^ ]+) \(data\.lua\)', log_text))
     db = Database(raw=raw)
     (work / 'recipes.json').write_text(
-        json.dumps([db.recipe(n) for n in sorted(db.recipes)], ensure_ascii=False, indent=2), encoding='utf-8'
+        json.dumps([db.recipe(n) for n in sorted(db.recipes)], ensure_ascii=False, indent=2),
+        encoding='utf-8',
     )
     (work / 'technologies.json').write_text(
-        json.dumps([db.technology(n) for n in sorted(raw.get('technology', {}))], ensure_ascii=False, indent=2),
+        json.dumps(
+            [db.technology(n) for n in sorted(raw.get('technology', {}))],
+            ensure_ascii=False,
+            indent=2,
+        ),
         encoding='utf-8',
     )
     (work / 'manifest.json').write_text(json.dumps(manifest, indent=2), encoding='utf-8')

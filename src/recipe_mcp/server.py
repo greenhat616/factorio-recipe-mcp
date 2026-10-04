@@ -1,7 +1,6 @@
 """MCP stdio server: recipe/technology/progress queries and production planning tools."""
 
-import argparse
-
+import click
 from mcp.server.fastmcp import FastMCP
 
 from .database import JSON, Database
@@ -266,12 +265,11 @@ def create_server(db: Database) -> FastMCP:
     return mcp
 
 
-def main(argv: list[str] | None = None) -> None:
-    ap = argparse.ArgumentParser(prog='recipe-mcp-server', description=__doc__)
-    ap.add_argument('--stdio', action='store_true', help='Compatibility flag; stdio is the only transport')
-    ap.add_argument('--force', help='Default force for stage-aware queries')
-    args = ap.parse_args(argv)
-    create_server(Database(default_force=args.force)).run(transport='stdio')
+@click.command(help=__doc__)
+@click.option('--stdio', is_flag=True, help='Compatibility flag; stdio is the only transport.')
+@click.option('--force', help='Default force for stage-aware queries.')
+def main(stdio: bool, force: str | None) -> None:
+    create_server(Database(default_force=force)).run(transport='stdio')
 
 
 if __name__ == '__main__':

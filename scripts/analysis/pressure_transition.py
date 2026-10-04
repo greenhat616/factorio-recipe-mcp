@@ -5,12 +5,12 @@ never written to the actual progress snapshot. Gas compression/decompression at
 the producer/consumer is accounted for in recipe rates and machine counts.
 """
 
-import argparse
 import json
 import math
 from collections import defaultdict
 from collections.abc import Iterable
 
+import click
 import numpy as np
 from scipy.optimize import linprog
 from scipy.sparse import csc_matrix, eye, hstack
@@ -372,13 +372,12 @@ def solve(
     )
 
 
-if __name__ == '__main__':
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--rate', type=float, default=150)
-    parser.add_argument('--force', default='faction-a632079')
-    args = parser.parse_args()
+@click.command(help=__doc__)
+@click.option('--rate', type=float, default=150, show_default=True, help='Each science pack per second.')
+@click.option('--force', default='faction-a632079', show_default=True, help='Force from the save snapshot.')
+def main(rate: float, force: str) -> None:
     db = Database()
-    db.require_force(args.force)
+    db.require_force(force)
     cases = [
         ('entry_volcanic', [], False, []),
         ('entry_water_electrolysis', [], False, ['nullius-pressure-steam-electrolysis', 'nullius-steam-electrolysis']),
@@ -406,7 +405,7 @@ if __name__ == '__main__':
     results: list[JSON] = []
     for name, targets, conserve, disabled in cases:
         cap = results[0]['supplies']['fluid:nullius-volcanic-gas'] if name == 'industrial_capped' else None
-        report = solve(db, args.force, name, targets, args.rate, conserve, disabled, cap)
+        report = solve(db, force, name, targets, rate, conserve, disabled, cap)
         path = DATA_DIR / ('pressure-transition-' + name + '.json')
         path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding='utf-8')
         print(
@@ -425,3 +424,7 @@ if __name__ == '__main__':
     (DATA_DIR / 'pressure-transition-all.json').write_text(
         json.dumps(results, ensure_ascii=False, indent=2), encoding='utf-8'
     )
+
+
+if __name__ == '__main__':
+    main()

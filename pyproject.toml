@@ -5,6 +5,7 @@ description = "Factorio recipes, technologies, save progress and production plan
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
+    "click==8.5.0",
     "mcp==1.30.0",
     "numpy==2.5.3",
     "scipy==1.18.1",

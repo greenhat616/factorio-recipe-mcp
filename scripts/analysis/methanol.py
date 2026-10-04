@@ -5,13 +5,13 @@ installed-machine power includes ceiling-rounded machines and fixed drains.
 Not a global optimization of unrelated industry, biology, beacons or energy generation.
 """
 
-import argparse
 import itertools
 import json
 import math
 from collections import defaultdict
 from collections.abc import Iterable
 
+import click
 import numpy as np
 from scipy.optimize import linprog
 
@@ -227,21 +227,18 @@ def solve(
     )
 
 
-if __name__ == '__main__':
-    ap = argparse.ArgumentParser()
-    ap.add_argument(
-        '--theoretical', action='store_true', help='Explicitly ignore save research for historical comparisons'
-    )
-    ap.add_argument('--force', help='Force from the save snapshot')
-    args = ap.parse_args()
-    if not args.theoretical:
-        db.require_force(args.force)
+@click.command(help=__doc__)
+@click.option('--theoretical', is_flag=True, help='Explicitly ignore save research for historical comparisons.')
+@click.option('--force', help='Force from the save snapshot.')
+def main(theoretical: bool, force: str | None) -> None:
+    if not theoretical:
+        db.require_force(force)
         cases = []
         for route in ['normal', 'pressure']:
             try:
-                cases.append(solve(route=route, module_tier=2, force=args.force))
+                cases.append(solve(route=route, module_tier=2, force=force))
             except RuntimeError as e:
-                cases.append({'route': route, 'force': args.force, 'feasible': False, 'reason': str(e)})
+                cases.append({'route': route, 'force': force, 'feasible': False, 'reason': str(e)})
         (DATA_DIR / 'methanol-current-stage.json').write_text(json.dumps(cases, indent=2), encoding='utf-8')
         for c in cases:
             print(
@@ -250,7 +247,7 @@ if __name__ == '__main__':
                 'stage valid:',
                 c.get('stage_validation', {}).get('valid_at_stage'),
             )
-        raise SystemExit(0)
+        return
     cases = []
     for route in ['normal', 'pressure', 'pressure-direct']:
         for mods in ['none', 'efficiency', 'optimize']:
@@ -274,3 +271,7 @@ if __name__ == '__main__':
         if c['module_policy'] == 'optimize':
             for r in c['rows']:
                 print(' ', r['recipe'], r['modules'], round(r['crafts_per_second'], 5), r['count'])
+
+
+if __name__ == '__main__':
+    main()

@@ -14,3 +14,6 @@ RAW_DUMP = DATA_DIR / 'script-output' / 'data-raw-dump.json'
 PROGRESS = DATA_DIR / 'progress.json'
 # The hotfix workspace that holds this project, helper mods and planning docs.
 WORKSPACE_ROOT = PROJECT_ROOT.parent
+# Exporter defaults: the Steam install and the user data mods directory.
+FACTORIO_EXE = Path(r'D:\Program Files (x86)\Steam\steamapps\common\Factorio\bin\x64\factorio.exe')
+FACTORIO_MODS = Path.home() / 'AppData/Roaming/Factorio/mods'

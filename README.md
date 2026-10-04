@@ -221,7 +221,7 @@ uv run --directory recipe-mcp ruff check
 uv run --directory recipe-mcp ruff format
 ```
 
-Tests marked `realdata` skip when `data/` has no compatible export. They use force `faction-a632079`; set `RECIPE_MCP_TEST_FORCE` to override. mypy runs with `disallow_untyped_defs` over `src`, `tests` and `scripts`.
+Tests marked `realdata` skip when `data/` has no compatible export. They use force `faction-a632079`; set `RECIPE_MCP_TEST_FORCE` to override. mypy runs with `disallow_untyped_defs` over `src`, `tests` and `scripts`. Command lines are built with click.
 
 ## Methanol analysis script
 

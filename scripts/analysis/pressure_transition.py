@@ -4,29 +4,37 @@ All material balances use final prototypes. Future unlocks are hypothetical and
 never written to the actual progress snapshot. Gas compression/decompression at
 the producer/consumer is accounted for in recipe rates and machine counts.
 """
-import argparse
+
 import json
 import math
 from collections import defaultdict
 from collections.abc import Iterable
 
+import click
 import numpy as np
 from scipy.optimize import linprog
-from scipy.sparse import csc_matrix, eye, hstack, vstack
+from scipy.sparse import csc_matrix, eye, hstack
 
 from recipe_mcp.database import JSON, Database, amount
 from recipe_mcp.paths import DATA_DIR
-from recipe_mcp.planner import drain_watts
-from science_fluids import watts
+from recipe_mcp.planner import drain_watts, watts
 
-PACKS = ['nullius-' + n + '-pack' for n in
-         ['geology', 'climatology', 'mechanical', 'electrical', 'chemical', 'physics']]
-INDUSTRIAL = ['nullius-high-pressure-chemistry-2', 'nullius-air-separation-4',
-              'nullius-aluminum-production-3', 'nullius-steelmaking-3',
-              'nullius-silicon-production-3', 'nullius-miniaturization-1',
-              'nullius-volcanism-2', 'lambent-nil-phosphorus-chemistry-4',
-              'nullius-mechanical-engineering-2', 'nullius-electrical-engineering-2',
-              'nullius-experimental-chemistry-2']
+PACKS = [
+    'nullius-' + n + '-pack' for n in ['geology', 'climatology', 'mechanical', 'electrical', 'chemical', 'physics']
+]
+INDUSTRIAL = [
+    'nullius-high-pressure-chemistry-2',
+    'nullius-air-separation-4',
+    'nullius-aluminum-production-3',
+    'nullius-steelmaking-3',
+    'nullius-silicon-production-3',
+    'nullius-miniaturization-1',
+    'nullius-volcanism-2',
+    'lambent-nil-phosphorus-chemistry-4',
+    'nullius-mechanical-engineering-2',
+    'nullius-electrical-engineering-2',
+    'nullius-experimental-chemistry-2',
+]
 
 # Remove the ordinary equivalent only when a preferred compressed process is
 # unlocked. Different chemical routes and salt-producing electrolysis remain.
@@ -58,12 +66,14 @@ PREFERRED = {
 
 def closure(db: Database, targets: Iterable[str]) -> set[str]:
     seen: set[str] = set()
+
     def visit(n: str) -> None:
         if n in seen:
             return
         seen.add(n)
         for p in db.raw['technology'][n].get('prerequisites', []):
             visit(p)
+
     for n in targets:
         visit(n)
     return seen
@@ -76,14 +86,17 @@ class Stage:
         self.added = closure(db, targets) - self.current
         self.unlocks: defaultdict[str, list[str]] = defaultdict(list)
         for n in sorted(self.added):
-            for pack in db.science(n, force)['science_packs']:
+            for pack in db.science(n, force).science_packs:
                 if pack not in PACKS:
                     raise ValueError(f'{n} needs post-physics pack {pack}')
             for e in db.raw['technology'][n].get('effects', []):
                 if e['type'] == 'unlock-recipe':
                     self.unlocks[e['recipe']].append(n)
-        self.allowed = {n for n in db.recipes if not db.virtual(n) and
-                        (db.availability(n, force)['usable_at_stage'] is True or n in self.unlocks)} - set(disabled)
+        self.allowed = {
+            n
+            for n in db.recipes
+            if not db.virtual(n) and (db.availability(n, force).usable_at_stage is True or n in self.unlocks)
+        } - set(disabled)
         self.equipment = {}
         self.choices = defaultdict(list)
         for kind in ['assembling-machine', 'furnace', 'rocket-silo']:
@@ -100,9 +113,15 @@ class Stage:
                 manufacturers = []
                 for producer in db.producers.get(item, []):
                     recipe = db.recipes[producer]
-                    if producer not in self.allowed or recipe.get('category') in ['packaging', 'nullius-barrel', 'nullius-unbarrel']:
+                    if producer not in self.allowed or recipe.get('category') in [
+                        'packaging',
+                        'nullius-barrel',
+                        'nullius-unbarrel',
+                    ]:
                         continue
-                    net = sum(amount(e) for e in recipe.get('results', []) if e['name'] == item) - sum(amount(e) for e in recipe.get('ingredients', []) if e['name'] == item)
+                    net = sum(amount(e) for e in recipe.get('results', []) if e['name'] == item) - sum(
+                        amount(e) for e in recipe.get('ingredients', []) if e['name'] == item
+                    )
                     if net > 0 and not any(s in producer for s in ['legacy', 'recycling']):
                         manufacturers.append(producer)
                 if not manufacturers or m.get('energy_source', {}).get('type') not in ['electric', 'void', 'heat']:
@@ -113,19 +132,41 @@ class Stage:
         self.operations = {}
         for n in sorted(self.allowed):
             r = db.recipes[n]
-            opts = [p for p in self.choices[r.get('category', 'crafting')] if not p[1].get('fixed_recipe') or p[1]['fixed_recipe'] == n]
-            if not opts or not r.get('results') or r.get('category') in ['turbine-open', 'turbine-closed', 'nullius-power-sink']:
+            opts = [
+                p
+                for p in self.choices[r.get('category', 'crafting')]
+                if not p[1].get('fixed_recipe') or p[1]['fixed_recipe'] == n
+            ]
+            if (
+                not opts
+                or not r.get('results')
+                or r.get('category') in ['turbine-open', 'turbine-closed', 'nullius-power-sink']
+            ):
                 continue
-            machine, proto = min(opts, key=lambda p: (-p[1].get('crafting_speed', 1), watts(p[1].get('energy_usage', '0W')), p[0]))
-            seconds = r.get('energy_required', .5) / proto.get('crafting_speed', 1)
+            machine, proto = min(
+                opts, key=lambda p: (-p[1].get('crafting_speed', 1), watts(p[1].get('energy_usage', '0W')), p[0])
+            )
+            seconds = r.get('energy_required', 0.5) / proto.get('crafting_speed', 1)
             power = (watts(proto.get('energy_usage', '0W')) + drain_watts(proto)) / 1e6
-            self.operations[n] = dict(recipe=r, machine=machine, machine_seconds=seconds,
-                                      MW_per_craft_per_second=power * seconds,
-                                      energy_type=proto.get('energy_source', {}).get('type'))
+            self.operations[n] = dict(
+                recipe=r,
+                machine=machine,
+                machine_seconds=seconds,
+                MW_per_craft_per_second=power * seconds,
+                energy_type=proto.get('energy_source', {}).get('type'),
+            )
 
 
-def solve(db: Database, force: str, name: str, targets: Iterable[str], rate: float, conserve_volcanic: bool = False,
-          disabled: Iterable[str] = (), volcanic_cap: float | None = None) -> JSON:
+def solve(
+    db: Database,
+    force: str,
+    name: str,
+    targets: Iterable[str],
+    rate: float,
+    conserve_volcanic: bool = False,
+    disabled: Iterable[str] = (),
+    volcanic_cap: float | None = None,
+) -> JSON:
     stage = Stage(db, force, targets, disabled)
     banned = {old for preferred, older in PREFERRED.items() if preferred in stage.operations for old in older}
     # Keep the already-adopted second geology/climatology processes. Otherwise a
@@ -137,7 +178,6 @@ def solve(db: Database, force: str, name: str, targets: Iterable[str], rate: flo
     # A true compression operation has exactly one input and one output of
     # different forms of the same gas. Carbon deposition is NOT such an operation.
     compress, decompress, gas_map = {}, {}, {}
-    conversions = set()
     for n, op in stage.operations.items():
         r = op['recipe']
         ins, outs = r.get('ingredients', []), r.get('results', [])
@@ -187,7 +227,9 @@ def solve(db: Database, force: str, name: str, targets: Iterable[str], rate: flo
     for j, c in enumerate(columns):
         for n, v in c['balance'].items():
             if v:
-                rr.append(indices[n]); cc.append(j); vv.append(v)
+                rr.append(indices[n])
+                cc.append(j)
+                vv.append(v)
     matrix = csc_matrix((vv, (rr, cc)), shape=(len(materials), len(columns)))
     target = np.array([rate if n in {'item:' + p for p in PACKS} else 0 for n in materials])
     primary = np.array([1 if c['name'] == 'extract:nullius-fumarole' else 0 for c in columns], dtype=float)
@@ -202,13 +244,22 @@ def solve(db: Database, force: str, name: str, targets: Iterable[str], rate: flo
         limits = dict(A_ub=csc_matrix(primary.reshape(1, -1)), b_ub=[first.fun + 1e-5])
     result = linprog(costs, A_eq=matrix, b_eq=target, bounds=(0, None), method='highs', **limits)
     if not result.success:
-        diagnostic = linprog([1e-9] * len(columns) + [1e6 if n.endswith('-pack') else 1 for n in materials] + [1] * len(materials),
-                             A_eq=hstack([matrix, eye(len(materials)), -eye(len(materials))]), b_eq=target, bounds=(0, None), method='highs')
-        missing = [(n, diagnostic.x[len(columns)+i]) for i, n in enumerate(materials) if diagnostic.success and diagnostic.x[len(columns)+i] > 1e-6]
+        diagnostic = linprog(
+            [1e-9] * len(columns) + [1e6 if n.endswith('-pack') else 1 for n in materials] + [1] * len(materials),
+            A_eq=hstack([matrix, eye(len(materials)), -eye(len(materials))]),
+            b_eq=target,
+            bounds=(0, None),
+            method='highs',
+        )
+        missing = [
+            (n, diagnostic.x[len(columns) + i])
+            for i, n in enumerate(materials)
+            if diagnostic.success and diagnostic.x[len(columns) + i] > 1e-6
+        ]
         raise RuntimeError(name + ': ' + result.message + repr(missing))
     rates: defaultdict[str, float] = defaultdict(float)
     supplies: dict[str, float] = {}
-    for c, v in zip(columns, result.x):
+    for c, v in zip(columns, result.x, strict=True):
         if v < 1e-8:
             continue
         if c['name'] in imported:
@@ -229,16 +280,22 @@ def solve(db: Database, force: str, name: str, targets: Iterable[str], rate: flo
     disposal: defaultdict[str, float] = defaultdict(float)
     native_use: defaultdict[str, float] = defaultdict(float)
     decompressed_use: defaultdict[str, float] = defaultdict(float)
-    co_products: defaultdict[str, float] = defaultdict(float)
     uses: defaultdict[str, list[JSON]] = defaultdict(list)
     active = []
     for n, crafts in sorted(rates.items()):
         op = stage.operations[n]
         r = op['recipe']
-        active.append(dict(recipe=n, crafts_per_second=crafts, machine=op['machine'],
-                           machines=crafts * op['machine_seconds'],
-                           MW=crafts * op['MW_per_craft_per_second'], energy_type=op['energy_type'],
-                           projected_unlocks=stage.unlocks.get(n, [])))
+        active.append(
+            dict(
+                recipe=n,
+                crafts_per_second=crafts,
+                machine=op['machine'],
+                machines=crafts * op['machine_seconds'],
+                MW=crafts * op['MW_per_craft_per_second'],
+                energy_type=op['energy_type'],
+                projected_unlocks=stage.unlocks.get(n, []),
+            )
+        )
         if n in conversions:
             continue
         void = r.get('category') in ['nullius-gas-void', 'nullius-liquid-void']
@@ -257,59 +314,117 @@ def solve(db: Database, force: str, name: str, targets: Iterable[str], rate: flo
                 container[fluid] += qty
                 if key == 'ingredients' and not void:
                     uses[fluid].append(dict(recipe=n, units_per_second=qty))
-    pipes = [dict(fluid=n, process_demand_per_second=v,
-                  direct_compressed_recipe_demand=native_use[n], decompression_for_local_use=decompressed_use[n],
-                  production_per_second=output[n], disposal_per_second=disposal[n],
-                  pump2_banks_at_80pct=math.ceil(v / 4800 - 1e-9), pump3_banks_at_80pct=math.ceil(v / 9600 - 1e-9),
-                  top_consumers=sorted(uses[n], key=lambda r: -r['units_per_second'])[:6])
-             for n, v in sorted(demand.items(), key=lambda p: -p[1]) if v > 1e-6]
+    pipes = [
+        dict(
+            fluid=n,
+            process_demand_per_second=v,
+            direct_compressed_recipe_demand=native_use[n],
+            decompression_for_local_use=decompressed_use[n],
+            production_per_second=output[n],
+            disposal_per_second=disposal[n],
+            pump2_banks_at_80pct=math.ceil(v / 4800 - 1e-9),
+            pump3_banks_at_80pct=math.ceil(v / 9600 - 1e-9),
+            top_consumers=sorted(uses[n], key=lambda r: -r['units_per_second'])[:6],
+        )
+        for n, v in sorted(demand.items(), key=lambda p: -p[1])
+        if v > 1e-6
+    ]
     upgrades = []
     for n in sorted(stage.added):
         t = db.raw['technology'][n]
-        upgrades.append(dict(technology=n, prerequisites=t.get('prerequisites', []), unit=t.get('unit'),
-                             recipes=[e['recipe'] for e in t.get('effects', []) if e['type'] == 'unlock-recipe']))
-    return dict(name=name, target_each_pack_per_second=rate, added_targets=targets,
-                future_projection=bool(stage.added), new_technologies=upgrades,
-                stage_policy='Actual unlocked recipes plus explicit prerequisite closure; checkpoint completion assumed only in future projections.',
-                route_policy='Prefer compressed recipe counterparts; compress gas at producers, decompress only at local consumers. No modules or beacons.',
-                objective=('First minimize volcanic-gas extraction, then continuous machine count.' if conserve_volcanic else
-                           'Minimize continuous machine count with the declared volcanic extraction cap.' if volcanic_cap is not None else
-                           'Minimize continuous machine count; volcanic-gas supply unconstrained.'),
-                volcanic_extraction_cap=volcanic_cap,
-                boundary='Mining/extraction equipment, generation fuel, mall, transport pump energy and layout excluded. Heat exchanger duty is external thermal supply, not free steam. Fluid distribution flow excludes local excess venting.',
-                balance_residual=residual, raw_sha256=db.raw_sha256, provenance=db.progress['provenance'],
-                fluid_bus=pipes, supplies=supplies, gas_equivalence=gas_map, excluded_ordinary_recipes=sorted(banned),
-                active_recipes=active, machines_continuous=sum(r['machines'] for r in active),
-                electrical_MW=sum(r['MW'] for r in active if r['energy_type'] == 'electric'),
-                thermal_MW=sum(r['MW'] for r in active if r['energy_type'] == 'heat'),
-                equipment={n: stage.equipment[n] for n in sorted({r['machine'] for r in active})})
+        upgrades.append(
+            dict(
+                technology=n,
+                prerequisites=t.get('prerequisites', []),
+                unit=t.get('unit'),
+                recipes=[e['recipe'] for e in t.get('effects', []) if e['type'] == 'unlock-recipe'],
+            )
+        )
+    return dict(
+        name=name,
+        target_each_pack_per_second=rate,
+        added_targets=targets,
+        future_projection=bool(stage.added),
+        new_technologies=upgrades,
+        stage_policy='Actual unlocked recipes plus explicit prerequisite closure; checkpoint completion assumed only in future projections.',
+        route_policy='Prefer compressed recipe counterparts; compress gas at producers, decompress only at local consumers. No modules or beacons.',
+        objective=(
+            'First minimize volcanic-gas extraction, then continuous machine count.'
+            if conserve_volcanic
+            else 'Minimize continuous machine count with the declared volcanic extraction cap.'
+            if volcanic_cap is not None
+            else 'Minimize continuous machine count; volcanic-gas supply unconstrained.'
+        ),
+        volcanic_extraction_cap=volcanic_cap,
+        boundary='Mining/extraction equipment, generation fuel, mall, transport pump energy and layout excluded. Heat exchanger duty is external thermal supply, not free steam. Fluid distribution flow excludes local excess venting.',
+        balance_residual=residual,
+        raw_sha256=db.raw_sha256,
+        provenance=db.progress['provenance'],
+        fluid_bus=pipes,
+        supplies=supplies,
+        gas_equivalence=gas_map,
+        excluded_ordinary_recipes=sorted(banned),
+        active_recipes=active,
+        machines_continuous=sum(r['machines'] for r in active),
+        electrical_MW=sum(r['MW'] for r in active if r['energy_type'] == 'electric'),
+        thermal_MW=sum(r['MW'] for r in active if r['energy_type'] == 'heat'),
+        equipment={n: stage.equipment[n] for n in sorted({r['machine'] for r in active})},
+    )
 
 
-if __name__ == '__main__':
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--rate', type=float, default=150)
-    parser.add_argument('--force', default='faction-a632079')
-    args = parser.parse_args()
+@click.command(help=__doc__)
+@click.option('--rate', type=float, default=150, show_default=True, help='Each science pack per second.')
+@click.option('--force', default='faction-a632079', show_default=True, help='Force from the save snapshot.')
+def main(rate: float, force: str) -> None:
     db = Database()
-    db.require_force(args.force)
+    db.require_force(force)
     cases = [
         ('entry_volcanic', [], False, []),
         ('entry_water_electrolysis', [], False, ['nullius-pressure-steam-electrolysis', 'nullius-steam-electrolysis']),
         ('mechanical_upgrade', ['nullius-mechanical-engineering-2'], False, []),
-        ('science_upgrades', ['nullius-mechanical-engineering-2', 'nullius-electrical-engineering-2', 'nullius-experimental-chemistry-2'], False, []),
+        (
+            'science_upgrades',
+            [
+                'nullius-mechanical-engineering-2',
+                'nullius-electrical-engineering-2',
+                'nullius-experimental-chemistry-2',
+            ],
+            False,
+            [],
+        ),
         ('industrial_volcanic', INDUSTRIAL, False, []),
         ('industrial_capped', INDUSTRIAL, False, []),
         ('carbon_volcanic', INDUSTRIAL + ['nullius-carbon-sequestration-3'], False, []),
-        ('carbon_without_new_recipes', INDUSTRIAL + ['nullius-carbon-sequestration-3'], False,
-         ['nullius-carbon-dioxide-electrolysis', 'nullius-carbon-deposition', 'nullius-carbon-sink']),
+        (
+            'carbon_without_new_recipes',
+            INDUSTRIAL + ['nullius-carbon-sequestration-3'],
+            False,
+            ['nullius-carbon-dioxide-electrolysis', 'nullius-carbon-deposition', 'nullius-carbon-sink'],
+        ),
     ]
     results: list[JSON] = []
     for name, targets, conserve, disabled in cases:
         cap = results[0]['supplies']['fluid:nullius-volcanic-gas'] if name == 'industrial_capped' else None
-        report = solve(db, args.force, name, targets, args.rate, conserve, disabled, cap)
+        report = solve(db, force, name, targets, rate, conserve, disabled, cap)
         path = DATA_DIR / ('pressure-transition-' + name + '.json')
         path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding='utf-8')
-        print(name, 'new techs:', len(report['new_technologies']), 'balance:', report['balance_residual'],
-              'machines:', round(report['machines_continuous']), 'volcanic:', round(report['supplies'].get('fluid:nullius-volcanic-gas', 0)), flush=True)
+        print(
+            name,
+            'new techs:',
+            len(report['new_technologies']),
+            'balance:',
+            report['balance_residual'],
+            'machines:',
+            round(report['machines_continuous']),
+            'volcanic:',
+            round(report['supplies'].get('fluid:nullius-volcanic-gas', 0)),
+            flush=True,
+        )
         results.append(report)
-    (DATA_DIR / 'pressure-transition-all.json').write_text(json.dumps(results, ensure_ascii=False, indent=2), encoding='utf-8')
+    (DATA_DIR / 'pressure-transition-all.json').write_text(
+        json.dumps(results, ensure_ascii=False, indent=2), encoding='utf-8'
+    )
+
+
+if __name__ == '__main__':
+    main()

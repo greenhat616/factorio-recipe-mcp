@@ -72,6 +72,21 @@
 
 依赖：阶段 0（与阶段 1–3 无耦合，可与之并行）。commit：`feat(planner): surplus disposal accounting`
 
+## 阶段 M：插件与信标（US-C1–C5，预留 R-C1–R-C3）
+
+| # | 任务 | 文件 | 完成标准 |
+|---|---|---|---|
+| M.1 | `Line` 增加 `beacon_items`、`module_counts`（design §5.2）；`MachineStats` 输出同名字段 | `planner/schema.py`, `planner/model.py`, `planner/api.py` | 合成：机器槽 2 个插件 + 1 类信标（`per_machine=0.5`、每座 2 个插件）→ `module_counts` = 3，`beacon_items` = 0.5 |
+| M.2 | `BeaconSpec.interference`、`BeaconRow.entity/item/interference`，变体解析与冲突报错（design §5.3）；`pin()` 往返 | `planner/schema.py`, `planner/model.py` | 真实数据：`nullius-beacon-2` + `interference=3` → `effect_factor` = 0.24、`beacon_W` = 120 kW；写变体名 `nullius-beacon-2-3` 结果相同；`nullius-large-beacon-1` + `interference=1` 报错；`pin()` 重建后系数不变 |
+| M.3 | `allowed_module_categories` 检查（机器与信标） | `planner/model.py` | 合成：实体只允许 `speed` 类别时放产能插件报错；`ignore_module_rules=true` 时通过 |
+| M.4 | 报告字段：产线与 `totals` 的 `beacon_count`、`beacon_count_ceil`、`beacon_power_MW`、`beacon_count_by_type`；`module_inventory`（design §5.5） | `planner/schema.py`, `planner/report.py`, `planner/api.py` | 合成：2 台机器、`per_machine=0.5` → `beacon_count` = 1；1.2 台机器 → `beacon_count_ceil` = ⌈2 × 0.5⌉ = 1；`module_inventory` 的 count 与 count_ceil 闭式校验；原有字段值不变 |
+| M.5 | 约束行 `beacons`、`beacons_by_type`、`modules`（design §3.3、§5.6），并入 `limits_usage` / `bottlenecks` | `planner/lp.py` | US-C3.4 的分配用例：无约束 A 导入 6.667，`limits.modules`=4 时为 8；未知信标 / 插件名报错；信标上限紧时出现在 `bottlenecks` |
+| M.6 | `disposal_defaults` 的 `modules` / `beacons` 生效，并计入处置汇总 | `planner/disposal.py` | 合成：处置机器装速度插件后台数按 cpm 闭式缩小 |
+| M.7 | 预留字段：`Defaults.module_options`、`weights.beacons` / `weights.modules` 传入非默认值时报"未实现" | `planner/schema.py`, `planner/api.py` | 两条报错路径各一个断言；默认值下结果与现状逐字段一致 |
+| M.8 | `solve_production` / `machine_stats` 文档字符串：`limits` 新键、`interference`、新返回字段 | `server.py` | stdio 调用一次带 `interference` 的 `machine_stats` |
+
+依赖：M.1–M.4、M.6–M.8 依赖阶段 0；M.5 依赖阶段 1（共用约束行与瓶颈）；M.6 依赖阶段 4。commit：`feat(planner): beacon and module accounting, limits and interference`（若改动过大，按 M.1–M.4 / M.5–M.8 拆成两个 commit）
+
 ## 阶段 5：方案存储与编辑（US-B1、B2、B3、B6、B8）
 
 | # | 任务 | 文件 | 完成标准 |
@@ -79,12 +94,13 @@
 | 5.1 | `PlanStore(root)`：名称校验、路径包含检查、1 MB 上限、原子写、JSON 解析错误处理、schema 校验 | `plans/store.py`, `paths.py` | `../x`、`a/b`、`..`、超长名称均被拒绝；写入中途抛异常时原文件不变 |
 | 5.2 | `save` / `get` / `list`；保存时校验请求键白名单与产线可构建 | `plans/store.py` | 非法请求键或不存在的配方 → 报错且不写盘 |
 | 5.3 | 指纹与过期判定（`fresh` / `stage_changed` / `prototypes_changed`） | `plans/store.py` | 篡改夹具中的指纹 → 标记正确 |
-| 5.4 | `edit`：design §6.4 的全部操作，内存副本 + 全量校验 + 修订号；`expected_revision` 冲突 | `plans/ops.py` | 一组操作中最后一个失败 → 文件与修订号均不变；冲突报错含当前修订号 |
+| 5.4 | `edit`：design §7.4 的全部操作，内存副本 + 全量校验 + 修订号；`expected_revision` 冲突 | `plans/ops.py` | 一组操作中最后一个失败 → 文件与修订号均不变；冲突报错含当前修订号 |
 | 5.5 | `pin`：依赖块结果；切换矩阵求解器后机器总数一致 | `plans/ops.py` | 真实数据：甲醇块 pin 前后机器总数差 < 1e-6 |
 | 5.6 | `delete`：`confirm` 校验，移入 `.trash/`，`list` 不显示 | `plans/store.py` | 断言回收站文件存在 |
 | 5.7 | 新建 `tests/test_plans.py`（`tmp_path` 夹具 + `realdata` 小用例） | `tests/test_plans.py` | 全部通过 |
+| 5.8 | 插件 / 信标编辑操作 `set_modules`、`set_beacons`、`replace_module`（design §7.4，US-C6） | `plans/ops.py` | 合成：跨两块替换插件，返回每块改动数；替换后某产线槽位或效果不合法 → 整个编辑回滚；替换数 0 → 警告；pin 后再 `replace_module` 仍生效 |
 
-依赖：阶段 0（需要 `plan()` 的 `status` 字段）；pin 需要阶段 5.2 的结果存储。commit：`feat(plans): plan store, edit ops and staleness`
+依赖：阶段 0（需要 `plan()` 的 `status` 字段）；pin 需要阶段 5.2 的结果存储；5.8 需要阶段 M 的 M.2（`interference` 往返）。commit：`feat(plans): plan store, edit ops and staleness`
 
 ## 阶段 6：工厂求解、汇总与联动（US-B4、B5）
 
@@ -93,9 +109,10 @@
 | 6.1 | 引用目标的校验（`from` 列表 / `*` / `plus`）；`remove_block`、`rename_block` 维护引用 | `plans/ops.py`, `plans/factory.py` | 删除被引用的块 → 报错；重命名后引用同步 |
 | 6.2 | 依赖闭包 + Kahn 拓扑 + 环路径 | `plans/factory.py` | 合成环 A→B→A 报错并给出路径 |
 | 6.3 | 按序求解、解析引用、单块错误隔离 | `plans/factory.py` | 合成：下游块导入 X=30 → 上游块目标解析为 30（+`plus`） |
-| 6.4 | 工厂账本与处置重算（design §6.5 公式） | `plans/factory.py` | 合成两块：A 溢出 40 氧气、B 导入 25 → `internal`=25、处置 15 |
+| 6.4 | 工厂账本与处置重算（design §7.5 公式） | `plans/factory.py` | 合成两块：A 溢出 40 氧气、B 导入 25 → `internal`=25、处置 15 |
 | 6.5 | `save_results` 写回摘要和指纹；`detail` 参数 | `plans/factory.py`, `plans/store.py` | 写回后 `stale="fresh"`，修订号 +1 |
 | 6.6 | 真实数据：甲醇块 + 引用甲醇的下游块（例如 `nullius-pressure-methanol` 的消费配方之一）方案求解 | `tests/test_plans.py` | 汇总平衡：Σout − Σin 与 net_out − net_in 一致 |
+| 6.7 | 工厂汇总加入 `beacon_count`、`beacon_count_by_type`、`module_inventory`（各块相加，含工厂处置设备） | `plans/factory.py` | 合成两块各用 3 个同种插件 → 汇总 6 |
 
 依赖：阶段 5；处置部分依赖阶段 4。commit：`feat(plans): factory solve, ledger and block links`
 
@@ -105,7 +122,7 @@
 |---|---|---|---|
 | 7.1 | 工具 `plan_list`、`plan_get`、`plan_save`、`plan_edit`、`plan_solve`、`plan_delete`；`create_server` 以 `paths.PLANS_DIR` 初始化 `PlanStore` | `server.py` | `recipe-mcp-cli` 列出 20 个工具 |
 | 7.2 | `tests/test_mcp_stdio.py`：工具数 20；每个新工具调用一次；非法名称、修订冲突返回 isError；测试方案用唯一前缀并在结束时删除 | `tests/test_mcp_stdio.py` | 通过；运行后 `data/plans/` 下不残留测试方案（回收站中的测试文件一并清理） |
-| 7.3 | README：计算模式、方案管理、示例命令、假设与限制 | `README.md` | 示例命令逐条实际运行成功 |
+| 7.3 | README：计算模式、方案管理、插件与信标（含干扰档位与库存约束）、示例命令、假设与限制 | `README.md` | 示例命令逐条实际运行成功 |
 | 7.4 | 性能检查：1000 条候选的最大化 + 弹性诊断 < 2 s；10 块方案 < 5 s | 临时脚本（不提交） | 结果记录到最终说明 |
 
 依赖：阶段 1–6。commit：`feat(mcp): plan management tools and docs`
@@ -114,8 +131,9 @@
 
 | # | 任务 | 文件 | 完成标准 |
 |---|---|---|---|
-| 8.1 | 整数模式：`milp`、耦合行、时限、gap、400 条上限、两阶段 | `planner/lp.py`, `server.py` | 合成：对比连续解与整数解，整数台数满足需求，`mip_gap` 有输出 |
+| 8.1 | 整数模式：`milp`、耦合行、时限、gap、400 条上限、两阶段；信标与插件行按 n_l 计（US-A8.4） | `planner/lp.py`, `server.py` | 合成：对比连续解与整数解，整数台数满足需求，`mip_gap` 有输出 |
 | 8.2 | `plan_compare` | `plans/factory.py`, `server.py` | 两个合成方案的差值断言；工具数 21 |
+| 8.3 | （预留 R-C1/R-C2，单独立项时再排期）`module_options` 候选产线生成与 `weights.beacons` / `weights.modules` | `planner/model.py`, `planner/lp.py` | 去掉 M.7 的"未实现"报错；US-C3.4 的分配用例改由 `module_options` 自动生成两条产线后结果相同 |
 
 ## 依赖关系
 
@@ -126,6 +144,11 @@ graph LR
   P2 --> P3[3 不可行诊断]
   P0 --> P4[4 处置核算]
   P0 --> P5[5 方案存储/编辑]
+  P0 --> PM[M 插件与信标]
+  P1 --> PM
+  P4 --> PM
+  PM --> P5
+  PM --> P7
   P5 --> P6[6 工厂求解/联动]
   P4 --> P6
   P3 --> P7[7 MCP 接入/文档]
@@ -153,7 +176,15 @@ graph LR
 | US-B6 | 5.3, 6.5 |
 | US-B7 | 8.2 |
 | US-B8 | 5.6 |
-| NFR-1 | 0.2, 7.2 |
+| US-C1 | M.6, 5.5（pin 保留插件）, 1.2（电力口径） |
+| US-C2 | M.1, M.4, M.5 |
+| US-C3 | M.1, M.4, M.5, 6.7 |
+| US-C4 | M.2 |
+| US-C5 | M.3 |
+| US-C6 | 5.8, 6.7 |
+| R-C1, R-C2 | M.7（占位报错）, 8.3 |
+| R-C3–R-C5 | 无实现任务；由 design §5.7 与 `scope` 字段声明边界 |
+| NFR-1 | 0.2, M.4, M.7, 7.2 |
 | NFR-2 | 7.4 |
 | NFR-3 | 1.3, 1.4, 2.3 |
 | NFR-4 | 5.1 |

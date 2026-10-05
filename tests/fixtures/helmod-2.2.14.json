@@ -1,0 +1,96 @@
+{
+  "reference": "Helmod 2.2.14 original Lua methods with prototype API stubs; not an in-game UI capture",
+  "zip_sha256": "5b0f00b7eddca81d46ad9d073b8b1af6a51e4a148507db68b67e15f1dbe949f3",
+  "method_sha256": {
+    "EntityPrototype:getEnergyProduction": "8fc130b776786f3118e7df7ac2ae3315aeeb106617f26ec1eb99ad7d7d231632",
+    "EntityPrototype:getNeighbourBonus": "22e32204127bbe395ab7b75d0dea31d11c62ad6ff9ca37a1a9d9d456e41938b1",
+    "BurnerPrototype:getFuelCount": "ca6ad56916a1cb63bdae471b512f32a61c0746aed0ddb12bf78635ea7463b535",
+    "Product:getElementAmount": "1038b1b3ca2bd79cdbbd3469f58d57a541b8adf53dfd5d47b95d5579518dd317",
+    "Product:getBonusAmount": "f0dda40e2061d0921a2ea0ce389367af3c70125a3ea7a246bb46fff4884158fe",
+    "Product:getBaseAmount": "9938c873883054dde86ef1e1971800558aaeb2e6b483573cf3555a3e234f2d9c",
+    "ModelCompute.computeFactory": "216d2e9852a518849b13218423d67860e76d2ccf4532344f2f92b2c1e012ccec"
+  },
+  "factories": [
+    {
+      "speed": 0,
+      "consumption": 0,
+      "beacon": 0,
+      "machines": 2.0,
+      "power_W": 200000.0
+    },
+    {
+      "speed": 0.5,
+      "consumption": 0.2,
+      "beacon": 0,
+      "machines": 1.3333333333333333,
+      "power_W": 160000.0
+    },
+    {
+      "speed": 0,
+      "consumption": -0.5,
+      "beacon": 0,
+      "machines": 2.0,
+      "power_W": 100000.0
+    },
+    {
+      "speed": 1,
+      "consumption": 0.4,
+      "beacon": 2,
+      "machines": 1.0,
+      "power_W": 180000.0
+    }
+  ],
+  "products": [
+    {
+      "element": {
+        "amount": 2
+      },
+      "bonus": 0,
+      "output": 2
+    },
+    {
+      "element": {
+        "amount": 2,
+        "probability": 0.25
+      },
+      "bonus": 0.2,
+      "output": 0.6
+    },
+    {
+      "element": {
+        "amount_min": 2,
+        "amount_max": 6,
+        "probability": 0.5
+      },
+      "bonus": 0.3,
+      "output": 2.6
+    },
+    {
+      "element": {
+        "amount": 4,
+        "ignored_by_productivity": 1
+      },
+      "bonus": 0.5,
+      "output": 5.5
+    },
+    {
+      "element": {
+        "amount": 4,
+        "probability": 0.5,
+        "ignored_by_productivity": 1
+      },
+      "bonus": 0.5,
+      "output": 2.5
+    }
+  ],
+  "fuel_per_second": 0.0125,
+  "generator_W": 1000000.0000000001,
+  "reactor_W": 50000000.0,
+  "solar_peak_W": 100000.0,
+  "neighbours": [
+    0,
+    1,
+    2,
+    2.5
+  ]
+}

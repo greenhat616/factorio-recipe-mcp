@@ -4,3 +4,5 @@ __pycache__/
 data/
 *.log
 *.pid
+.mypy_cache/
+.ruff_cache/

@@ -3,11 +3,12 @@
 import math
 from collections.abc import Sequence
 
+from .energy import PREFIXES, rate_factor
 from .model import CRAFTING_KINDS, Planner
 from .schema import Bottleneck, ConstraintState, Infeasibility, LimitRow, Limits, LimitUsage, Line, Mode, Per
 
 TIGHT = 1e-6
-MACHINE_KINDS = (*CRAFTING_KINDS, 'mining-drill')
+MACHINE_KINDS = (*CRAFTING_KINDS, 'mining-drill', *(kind for kinds in PREFIXES.values() for kind in kinds))
 
 
 def check_cap(name: str, value: float) -> float:
@@ -21,13 +22,19 @@ def limit_rows(p: Planner, lines: Sequence[Line], limits: Limits, factor: float)
     for name, cap in limits.imports.items():
         key = p.key(name)
         rows.append(
-            LimitRow(name=f'import:{key}', limit=check_cap(name, cap) / factor, item=key, rate=True, unit='unit')
+            LimitRow(
+                name=f'import:{key}',
+                limit=check_cap(name, cap) / rate_factor(key, factor),
+                item=key,
+                rate=not key.startswith('energy:'),
+                unit='MW' if key.startswith('energy:') else 'unit',
+            )
         )
     if limits.power_MW is not None:
         coef = [r.power_W / 1e6 / r.crafts_per_machine for r in lines]
         rows.append(LimitRow(name='power_MW', limit=limits.power_MW, coef=coef, unit='MW'))
     if limits.machines is not None:
-        coef = [1 / r.crafts_per_machine for r in lines]
+        coef = [0 if r.machine_type == 'temperature-match' else 1 / r.crafts_per_machine for r in lines]
         rows.append(LimitRow(name='machines', limit=limits.machines, coef=coef, unit='machine'))
     known = {n for kind in MACHINE_KINDS for n in p.raw.get(kind, {})}
     for machine, cap in limits.machines_by_type.items():

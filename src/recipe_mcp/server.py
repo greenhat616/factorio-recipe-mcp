@@ -26,6 +26,8 @@ from .planner.schema import (
     BeaconSpec,
     Defaults,
     DisposalMode,
+    EnergyMode,
+    GraphOptions,
     Limits,
     LineSpec,
     MachineStats,
@@ -213,6 +215,12 @@ def create_server(db: Database, plans_dir: Path = PLANS_DIR) -> FastMCP:
         disposal_defaults: Defaults | None = None,
         integer_machines: bool = False,
         time_limit: float = 10.0,
+        copies: int = 1,
+        graph: Literal['none', 'bipartite'] = 'none',
+        graph_options: GraphOptions | None = None,
+        energy_mode: EnergyMode = 'report',
+        solar_factor: float = 0.7,
+        wind_factor: float | None = None,
     ) -> PlanResult:
         """Helmod/Factory Planner style rate calculator: machine counts, modules/beacons, power, imports, byproducts.
 
@@ -242,6 +250,10 @@ def create_server(db: Database, plans_dir: Path = PLANS_DIR) -> FastMCP:
                 disposal_defaults (machine_preference defaults to efficient); reported in disposal, disposal_totals
                 and totals_with_disposal (totals itself excludes them); disposal_unhandled lists items with no void.
                 Never affects route choice. disposal='none' skips it.
+        energy_mode="balance": balance electricity/heat (MW regardless of per) and selected fuels.
+        Energy sources: heat:<reactor>, generate:<generator>, solar:<panel>, wind:<interface>.
+        Set line.fuel or defaults.fuel for burners; wind recipes require wind_factor.
+        copies divides construction into identical copies; rates and limits remain block totals.
         integer_machines (lp only, <= 400 lines): whole machine counts carry the machine cost and the machine, power,
                 pollution, beacon and module limits (MILP, time_limit seconds per stage; status time_limit with mip_gap
                 if stopped early). No marginal values and no elastic diagnosis. Pin routes first for large plans.
@@ -278,6 +290,12 @@ def create_server(db: Database, plans_dir: Path = PLANS_DIR) -> FastMCP:
             disposal_defaults=disposal_defaults,
             integer_machines=integer_machines,
             time_limit=time_limit,
+            copies=copies,
+            graph=graph,
+            graph_options=graph_options,
+            energy_mode=energy_mode,
+            solar_factor=solar_factor,
+            wind_factor=wind_factor,
         )
 
     @mcp.tool()
@@ -294,6 +312,12 @@ def create_server(db: Database, plans_dir: Path = PLANS_DIR) -> FastMCP:
         research_productivity: bool = True,
         force: str = '',
         validate_stage: bool = True,
+        energy_mode: EnergyMode = 'report',
+        fuel: str | None = None,
+        neighbours: int = 0,
+        solar_factor: float = 0.7,
+        wind_factor: float | None = None,
+        temperature: float | None = None,
     ) -> MachineStats:
         """One recipe in one machine: effective speed/productivity/consumption, I/O per machine, power, pollution.
         With rate (and optional item, default main output) returns machines needed. recipe may be "mining:<resource>".
@@ -313,6 +337,12 @@ def create_server(db: Database, plans_dir: Path = PLANS_DIR) -> FastMCP:
             validate_stage,
             mining_productivity,
             research_productivity,
+            energy_mode,
+            fuel,
+            neighbours,
+            solar_factor,
+            wind_factor,
+            temperature,
         )
 
     @mcp.tool()
@@ -371,13 +401,18 @@ def create_server(db: Database, plans_dir: Path = PLANS_DIR) -> FastMCP:
 
     @mcp.tool()
     def plan_solve(
-        name: str, blocks: list[str] = [], detail: Detail = 'summary', save_results: bool = True
+        name: str,
+        blocks: list[str] = [],
+        detail: Detail = 'summary',
+        save_results: bool = True,
+        graph: Literal['none', 'blocks', 'full'] = 'none',
+        graph_options: GraphOptions | None = None,
     ) -> FactoryResult:
         """Solve enabled blocks (or the listed ones plus the blocks they link to) in dependency order and sum them:
         net_inputs / net_outputs / internal_transfers per item on a shared-bus assumption, totals, beacons, modules,
         and disposal for surplus no other block takes. A failing block is reported and the rest still solve.
         detail="full" adds each block's full solve_production result. save_results writes the summaries back."""
-        return solve_plan(store, name, blocks, detail, save_results)
+        return solve_plan(store, name, blocks, detail, save_results, graph, graph_options)
 
     @mcp.tool()
     def plan_compare(a: str, b: str) -> Comparison:

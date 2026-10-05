@@ -47,7 +47,7 @@ def dispose(
     total = Totals()
     unhandled: list[str] = []
     for k, rate in sorted(surplus.items()):
-        if rate <= EPS:
+        if rate <= EPS or k.startswith('energy:'):
             continue
         best: tuple[float, Line] | None = None
         for name in index.get(k, []):

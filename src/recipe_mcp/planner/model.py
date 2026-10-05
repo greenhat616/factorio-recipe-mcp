@@ -7,9 +7,20 @@ from collections.abc import Iterable, Mapping, Sequence
 
 from ..database import Database
 from ..models import JSON, entries
+from .energy import (
+    ENERGY_KEYS,
+    PREFIXES,
+    apply_energy,
+    channel_recipe,
+    check_factors,
+    energy_line,
+    producers,
+    turbine_channel,
+)
 from .schema import (
     BeaconRow,
     Defaults,
+    EnergyMode,
     ExcludedCandidate,
     Line,
     LineSpec,
@@ -86,7 +97,12 @@ class Planner:
         validate_stage: bool = True,
         research_productivity: bool = True,
         mining_productivity: float = 0.0,
+        energy_mode: EnergyMode = 'report',
+        solar_factor: float = 0.7,
+        wind_factor: float | None = None,
     ) -> None:
+        check_factors(energy_mode, solar_factor, wind_factor)
+        self.energy_mode, self.solar_factor, self.wind_factor = energy_mode, solar_factor, wind_factor
         self.db, self.raw = db, db.raw
         self.validate = validate_stage
         self.force: str | None
@@ -120,6 +136,10 @@ class Planner:
                 self.drills_by_category[c].append(Machine(kind='mining-drill', name=n, proto=m))
 
     def key(self, name: str) -> str:
+        if name in ENERGY_KEYS:
+            return name
+        if name.startswith('energy:'):
+            raise ValueError(f'Unknown energy key: {name}')
         if ':' in name and name.split(':', 1)[0] in ('item', 'fluid'):
             return name
         types = self.types.get(name) or ({'fluid'} if name in self.raw.get('fluid', {}) else {'item'})
@@ -291,6 +311,8 @@ class Planner:
             raise ValueError('defaults.module_options is reserved and not implemented yet')
         if isinstance(spec, str):
             spec = LineSpec(recipe=spec)
+        if spec.recipe.partition(':')[0] in PREFIXES:
+            return energy_line(self, spec, defaults)
         recipe = self.recipe_view(spec.recipe)
         line_id = spec.id or recipe.name
         problems: list[str] = []
@@ -307,6 +329,8 @@ class Planner:
             if hit is None:
                 buildable = 'buildable ' if self.validate else ''
                 raise ValueError(f'No {buildable}machine for {recipe.name} (category {recipe.category})')
+        if self.energy_mode == 'balance':
+            recipe = channel_recipe(recipe, hit.name)
         m = hit.proto
         allowed = set(m.get('allowed_effects', []))
         categories = m.get('allowed_module_categories')
@@ -407,9 +431,9 @@ class Planner:
         for e in recipe.ingredients:
             balance[e.key] -= e.average
         for e in recipe.results:
-            balance[e.key] += e.output(prod)
+            balance[e.key] += e.output(prod, spec.productivity_model or defaults.productivity_model)
             if e.type == 'fluid':
-                default = self.raw.get('fluid', {}).get(e.name, {}).get('default_temperature', 15)
+                default = self.raw.get('fluid', {}).get(e.name.split('~', 1)[0], {}).get('default_temperature', 15)
                 temps[e.key].add(default if e.temperature is None else e.temperature)
         src = m.get('energy_source', {})
         if self.validate:
@@ -420,7 +444,7 @@ class Planner:
             if self.buildable(entity=hit.name) is not True:
                 blocked.append(f'machine {hit.name}')
             blocked += [f'module {x}' for x in sorted(set(modules)) if self.buildable(item=x) is not True]
-        return Line(
+        row = Line(
             id=line_id,
             recipe=recipe.name,
             machine=hit.name,
@@ -429,6 +453,7 @@ class Planner:
             beacons=beacon_rows,
             speed_multiplier=speed_mult,
             productivity=prod,
+            productivity_model=spec.productivity_model or defaults.productivity_model,
             consumption_multiplier=cons_mult,
             pollution_multiplier=poll_mult,
             research_productivity=research_bonus,
@@ -453,11 +478,17 @@ class Planner:
             module_counts={k: v for k, v in module_counts.items() if v},
         )
 
+        return apply_energy(self, row, src, spec, defaults)
+
     def auto_ok(self, name: str, include_hidden: bool) -> bool:
         r = self.db.recipes[name]
         return not (
             self.db.virtual(name)
-            or r.get('category', 'crafting') in AUTO_EXCLUDED_CATEGORIES
+            or r.get('category', 'crafting')
+            in (
+                AUTO_EXCLUDED_CATEGORIES
+                - ({'turbine-open', 'turbine-closed'} if self.energy_mode == 'balance' else set())
+            )
             or any(s in name for s in AUTO_EXCLUDED_NAMES)
             or (r.get('hidden') and not include_hidden)
             or (self.validate and self.db.availability(name, self.force).usable_at_stage is not True)
@@ -495,7 +526,10 @@ class Planner:
         frontier_left: list[str] = []
         if auto:
             have = {r.recipe for r in out}
-            frontier, expanded = list(targets), set(imports)
+            frontier, expanded = (
+                list(targets) + [k for row in out for k, v in row.balance.items() if v < 0],
+                set(imports),
+            )
             for _ in range(max_depth):
                 nxt: list[str] = []
                 for k in frontier:
@@ -503,19 +537,37 @@ class Planner:
                         continue
                     expanded.add(k)
                     names = [
-                        n for n in self.db.producers.get(k.split(':', 1)[1], []) if n not in have and n not in exclude
+                        n
+                        for n in self.db.producers.get(k.split(':', 1)[1].split('~', 1)[0], [])
+                        if n not in have and n not in exclude
                     ]
+                    if k in ENERGY_KEYS and self.energy_mode == 'balance':
+                        names = [n for n in producers(self, k) if n not in have and n not in exclude]
                     if allow_mining:
                         mined = ['mining:' + r for r in self.resources.get(k, [])]
                         names += [n for n in mined if n not in have and n not in exclude]
                     for n in names:
-                        if not n.startswith('mining:') and not self.auto_ok(n, include_hidden):
+                        if n.partition(':')[0] not in (*PREFIXES, 'mining') and not self.auto_ok(n, include_hidden):
                             continue
                         if len(out) >= max_lines:
                             truncated = True
                             break
                         try:
-                            row = self.line(n, defaults)
+                            candidate: str | LineSpec = n
+                            if k.startswith('fluid:nullius-energy~'):
+                                channel = k.split('~', 1)[1]
+                                machine = next(
+                                    (
+                                        m.name
+                                        for m in self.candidates(self.recipe_view(n))
+                                        if turbine_channel(m.name) == channel and '-standard-' in m.name
+                                    ),
+                                    None,
+                                )
+                                if machine is None:
+                                    continue
+                                candidate = LineSpec(recipe=n, id=n + '~' + channel, machine=machine)
+                            row = self.line(candidate, defaults)
                         except ValueError as e:
                             excluded.append(ExcludedCandidate(recipe=n, reason=str(e)))
                             have.add(n)
@@ -527,7 +579,8 @@ class Planner:
                         # outputs, so leave n eligible for a later frontier item.
                         if row.balance.get(k, 0) <= EPS:
                             continue
-                        have.add(n)
+                        if not k.startswith('fluid:nullius-energy~'):
+                            have.add(n)
                         out.append(row)
                         nxt += [i for i, v in row.balance.items() if v < 0]
                 frontier = nxt

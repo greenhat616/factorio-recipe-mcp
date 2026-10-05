@@ -86,8 +86,24 @@ async def run(db: Database, force: str, plan_name: str) -> None:
             )[0]
             assert not equipment['valid_at_stage']
             lp = (
-                await call('solve_production', {'targets': {'nullius-methanol': 600}, 'per': 'minute', 'force': force})
+                await call(
+                    'solve_production',
+                    {'targets': {'nullius-methanol': 600}, 'per': 'minute', 'force': force, 'graph': 'bipartite'},
+                )
             )[0]
+            assert lp['graph']['schema_version'] == 1
+            energy = (
+                await call(
+                    'solve_production',
+                    {
+                        'targets': {'energy:electric': 10},
+                        'energy_mode': 'balance',
+                        'force': force,
+                        'graph': 'bipartite',
+                    },
+                )
+            )[0]
+            assert abs(energy['totals']['net_electric_MW'] - 10) < 1e-6
             assert lp['max_balance_error'] < 1e-6 and lp['solver'] == 'lp' and lp['lines']
             mx = (
                 await call(
@@ -160,7 +176,8 @@ async def plan_tools(call: Any, force: str, name: str) -> None:
     edited = (await call('plan_edit', {'name': name, 'ops': [edit], 'expected_revision': 1}))[0]
     assert edited['revision'] == 2
     await call('plan_edit', {'name': name, 'ops': [edit], 'expected_revision': 1}, error=True)
-    solved = (await call('plan_solve', {'name': name}))[0]
+    solved = (await call('plan_solve', {'name': name, 'graph': 'full'}))[0]
+    assert solved['graph']['schema_version'] == 1
     assert solved['blocks'][0]['status'] == 'optimal' and solved['factory']['net_inputs']
     pinned = (await call('plan_edit', {'name': name, 'ops': [{'op': 'pin', 'block_id': 'methanol'}]}))[0]
     assert pinned['revision'] == 4

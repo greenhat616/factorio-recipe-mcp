@@ -42,7 +42,16 @@ def check_block(db: Database, plan: PlanFile, block: Block) -> None:
     req = block.request
     try:
         ids = {b.id for b in plan.blocks}
-        p = Planner(db, plan.force, req.validate_stage, req.research_productivity, req.mining_productivity)
+        p = Planner(
+            db,
+            plan.force,
+            req.validate_stage,
+            req.research_productivity,
+            req.mining_productivity,
+            req.energy_mode,
+            req.solar_factor,
+            req.wind_factor,
+        )
         targets: set[str] = set()
         for name, v in req.targets.items():
             targets.add(p.key(name))
@@ -55,7 +64,11 @@ def check_block(db: Database, plan: PlanFile, block: Block) -> None:
         for name, v in req.consume.items():
             if p.key(name) in targets:
                 raise ValueError(f'{name} is both a target and consumed')
-            if not math.isfinite(v) or v <= 0:
+            if isinstance(v, TargetRef):
+                for ref in [] if v.from_ == '*' else v.from_:
+                    if ref == block.id or ref not in ids:
+                        raise ValueError(f'consume {name} refers to unknown or own block {ref}')
+            elif not math.isfinite(v) or v <= 0:
                 raise ValueError(f'consume {name}={v} must be finite and positive')
         if req.solver == 'matrix' and (req.mode == 'maximize' or req.limits or req.integer_machines):
             raise ValueError('mode=maximize, limits and integer_machines need the lp solver')

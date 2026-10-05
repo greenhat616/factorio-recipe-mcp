@@ -25,3 +25,22 @@
 ## 记录
 
 基线：86 tests passed，mypy 与 ruff 通过。各阶段验收及最终性能数据补记到 implementation-results.md。
+
+
+## 实施中核实的原型差异
+
+- 本机 mods 已是 Nullius 2.0.11；测试采用已有兼容导出快照，不改动运行环境。
+- Nullius 涡轮发电机为隐藏辅助实体，按 scripts/turbine.lua 映射到涡轮制造物品校验。求解行显示两个内部容量，不能视作两种需购买设备；报告显式注明。
+- solar-flux 没有 fuel_value，集热器按流体输入量建模；电驱动热存储器必须计入电输入，不能作为免费热源。
+- 温度明细保留在物料键中，额外提供按基础物料分组的 temperatures 字段，避免图中把不兼容温度合并。温度匹配行计零设备、零成本，不进入可固定的实体产线清单。
+- 阶段 4–5 合并为一个能源提交，因为能源边界、原型来源与真实链验收共同构成可用的能力。
+
+
+## Helmod 概率产能兼容
+
+执行 Helmod 2.2.14 的 Product:getBaseAmount 后发现：amount=4、probability=0.5、ignored_by_productivity=1、产能+50% 时，Helmod 输出 2.5，而现有模型输出 2.75。官方文档没有直接给出此组合的期望公式，不将此发现解释为游戏实测结果。
+
+新增 defaults.productivity_model / lines[].productivity_model：expected（默认，保持原算法）或 helmod（先乘概率再扣 ignored_by_productivity，与该版 Helmod 一致）。产线输出回显并在 pin 后保留；温度拆分使用同一算法。对照测试同时断言兼容值与旧值，不以已知差异冒充一致。
+
+
+内部涡轮能量按开式/闭式和等级隔离为 fluid:nullius-energy~<type>-<tier>，不允许默认导入。防止 LP 将闭式配方配到开式隐藏发电器的效率；回归测试检查每个实际选中生成器的内部通道与涡轮类型/等级对应。

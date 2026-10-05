@@ -457,3 +457,118 @@ def test_compare_saved_results(store: PlanStore) -> None:
     assert c.per == 'second' and c.warnings == ['two/m rates converted from per minute to per second']
     assert c.imports['item:a'].a == pytest.approx(10) and c.imports['item:a'].b == pytest.approx(10 / 1.4 / 60)
     assert c.totals['machines'].diff == pytest.approx(10 / 1.4 / 60 - 10)
+
+
+@pytest.mark.parametrize('factor,remaining', [(1, 0), (0.5, 20)])
+def test_consume_surplus_reference(store: PlanStore, factor: float, remaining: float) -> None:
+    store.save(
+        'linked',
+        [
+            block('source', targets={'e': 40}, lines=['ox']),
+            block('sink', lines=['use-o'], consume={'o': {'from': ['source'], 'factor': factor}}),
+        ],
+    )
+    r = solve_plan(store, 'linked', detail='full')
+    assert r.order == ['source', 'sink']
+    assert r.blocks[1].consume['item:o'] == pytest.approx(40 * factor)
+    assert r.factory.internal_transfers['item:o'] == pytest.approx(40 * factor)
+    assert sum(x.inputs.get('item:o', 0) for x in r.factory.disposal) == pytest.approx(remaining)
+    with pytest.raises(ValueError, match='referenced'):
+        store.edit('linked', ops({'op': 'remove_block', 'block_id': 'source'}))
+    store.edit('linked', ops({'op': 'rename_block', 'block_id': 'source', 'new_id': 'renamed'}))
+    ref = store.read('linked').block('sink').request.consume['o']
+    assert isinstance(ref, TargetRef) and ref.from_ == ['renamed']
+
+
+def test_consume_cycle_and_empty_reference(store: PlanStore) -> None:
+    store.save(
+        'cycle',
+        [
+            block('a', targets={'e': {'from': ['b']}}, lines=['ox']),
+            block('b', consume={'o': {'from': ['a']}}, lines=['use-o']),
+        ],
+    )
+    with pytest.raises(ValueError, match='cycle'):
+        solve_plan(store, 'cycle')
+    store.save(
+        'empty',
+        [
+            block('a', targets={'e': 1}, lines=['ox']),
+            block('b', targets={'d': 1}, consume={'o': {'from': ['a'], 'factor': 0}}, lines=['use-o']),
+        ],
+    )
+    r = solve_plan(store, 'empty')
+    assert not r.blocks[1].consume
+    assert any('omitted' in w for w in r.warnings)
+
+
+def test_reference_sources(store: PlanStore) -> None:
+    store.save(
+        'sources',
+        [
+            block('a', targets={'e': 10}, lines=['ox']),
+            block('b', targets={'e': {'from': ['a'], 'of': 'net_outputs', 'factor': 2, 'plus': 3}}, lines=['ox']),
+        ],
+    )
+    r = solve_plan(store, 'sources')
+    assert r.blocks[1].resolved_targets['e'] == 23
+    assert TargetRef.model_validate({'from': ['a']}).of == 'imports'
+
+
+def test_add_linked_blocks_and_suggestions(store: PlanStore) -> None:
+    store.save('supply', [block('c', targets={'c': 15}, lines=['bc'])])
+    result = solve_plan(store, 'supply')
+    suggestion = next(s for s in result.factory.suggestions if s['item'] == 'item:b')
+    store.edit('supply', ops(suggestion))
+    result = solve_plan(store, 'supply')
+    assert 'item:b' not in result.factory.net_inputs
+    assert result.blocks[1].resolved_targets['item:b'] == 30
+    store.save('consumer', [block('e', targets={'e': 40}, lines=['ox'])])
+    with pytest.raises(ValueError, match='needs request'):
+        store.edit('consumer', ops(dict(op='add_consumer_block', for_block='e', item='o', new_id='bad')))
+    store.edit(
+        'consumer',
+        ops(dict(op='add_consumer_block', for_block='e', item='o', new_id='sink', request={'lines': ['use-o']})),
+    )
+    result = solve_plan(store, 'consumer')
+    assert not result.factory.disposal
+    assert result.factory.internal_transfers['item:o'] == pytest.approx(40)
+
+
+@pytest.mark.parametrize('integer', [False, True])
+def test_copies(db: Database, integer: bool) -> None:
+    r = plan(db, {'b': 4.8}, lines=['ab'], copies=4, integer_machines=integer, validate_stage=False)
+    assert r.per_copy is not None and r.copies_totals is not None
+    assert r.per_copy.lines[0].machines == pytest.approx(1.2)
+    assert r.per_copy.lines[0].machines_ceil == 2
+    assert r.copies_totals.machines_ceil == 8
+    assert r.achieved_targets['item:b'] == pytest.approx(4.8)
+    assert plan(db, {'b': 1}, lines=['ab'], validate_stage=False).per_copy is None
+
+
+def test_copies_integer_capacity_and_limits(db: Database) -> None:
+    with pytest.raises(ValueError):
+        plan(
+            db, {'b': 4.8}, lines=['ab'], copies=4, integer_machines=True, limits={'machines': 7}, validate_stage=False
+        )
+    r = plan(
+        db,
+        {'b': 1},
+        lines=['ab'],
+        copies=4,
+        integer_machines=True,
+        mode='maximize',
+        limits={'machines': 8},
+        validate_stage=False,
+    )
+    assert r.achieved_targets['item:b'] == pytest.approx(8)
+    assert r.limits_usage[0].used == 8
+
+
+def test_copies_factory_module_rounding(store: PlanStore) -> None:
+    store.save('copies', [block('b', targets={'b': 4.8}, lines=[{'recipe': 'ab', 'modules': ['pm1']}], copies=4)])
+    result = solve_plan(store, 'copies', detail='full')
+    assert result.factory.totals.machines_ceil == 8
+    assert result.factory.module_inventory['pm1'].count_ceil == 8
+    full = result.blocks[0].result
+    assert full is not None and full.module_inventory['pm1'].count_ceil == 8

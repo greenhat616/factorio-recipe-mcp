@@ -57,7 +57,11 @@ def analyze_matrix(
             roles[k] = 'byproduct'
         else:
             roles[k] = 'intermediate'
-        if roles[k] == 'raw' or (k in imports and roles[k] != 'target'):
+        if (
+            (roles[k] == 'raw' or (k in imports and roles[k] != 'target'))
+            and (not k.startswith('energy:') or k in imports)
+            and ('@' not in k or not k.startswith('fluid:'))
+        ):
             imp.append(k)
         if roles[k] == 'byproduct' or k in surplus_items:
             sur.append(k)

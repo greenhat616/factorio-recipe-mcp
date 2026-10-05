@@ -4,10 +4,12 @@ from collections.abc import Sequence
 from typing import Any
 
 from ..database import Database
+from ..planner.model import Planner
 from ..planner.schema import LineSpec
 from .models import (
     AddBlock,
     AddLine,
+    AddLinkedBlock,
     Block,
     BlockRequest,
     EditOp,
@@ -45,7 +47,7 @@ def line_id(spec: str | LineSpec) -> str:
 def references(block: Block) -> set[str]:
     """Block ids this block's targets name explicitly ('*' is resolved when solving)."""
     out: set[str] = set()
-    for v in block.request.targets.values():
+    for v in [*block.request.targets.values(), *block.request.consume.values()]:
         if isinstance(v, TargetRef) and v.from_ != '*':
             out.update(v.from_)
     return out
@@ -144,6 +146,26 @@ def apply_one(plan: PlanFile, op: EditOp, db: Database, notes: list[str], warnin
             if any(x.id == b.id for x in plan.blocks):
                 raise ValueError(f'block {b.id} exists')
             plan.blocks.append(Block(id=b.id, description=b.description, enabled=b.enabled, request=b.request))
+        case AddLinkedBlock(for_block=bid, item=item, new_id=new, request=overrides):
+            source = plan.block(bid)
+            if any(b.id == new for b in plan.blocks):
+                raise ValueError(f'block {new} exists')
+            consumer = op.op == 'add_consumer_block'
+            if consumer and not (overrides.get('lines') or overrides.get('targets')):
+                raise ValueError('add_consumer_block needs request.lines or request.targets')
+            inherited = {
+                k: v
+                for k, v in request_dict(source).items()
+                if k in ('defaults', 'validate_stage', 'objective', 'energy_mode', 'solar_factor', 'wind_factor')
+            }
+            data = merge(inherited, overrides)
+            field = 'consume' if consumer else 'targets'
+            data[field] = {**data.get(field, {}), item: {'from': [bid], 'of': 'surplus' if consumer else 'imports'}}
+            plan.blocks.append(Block(id=new, request=BlockRequest.model_validate(data)))
+            key = Planner(db, validate_stage=False).key(item)
+            saved = source.result
+            if saved is None or not getattr(saved, 'surplus' if consumer else 'imports').get(key):
+                warnings.append(f'{bid}: no saved {"surplus" if consumer else "imports"} for {key}; link created')
         case RemoveBlock(block_id=bid):
             plan.block(bid)
             users = [x.id for x in plan.blocks if bid in references(x)]
@@ -156,7 +178,7 @@ def apply_one(plan: PlanFile, op: EditOp, db: Database, notes: list[str], warnin
                 raise ValueError(f'block {new} exists')
             block.id = new
             for x in plan.blocks:
-                for v in x.request.targets.values():
+                for v in [*x.request.targets.values(), *x.request.consume.values()]:
                     if isinstance(v, TargetRef) and v.from_ != '*':
                         v.from_ = [new if r == bid else r for r in v.from_]
         case SetEnabled(block_id=bid, enabled=enabled):
@@ -225,7 +247,10 @@ def apply_one(plan: PlanFile, op: EditOp, db: Database, notes: list[str], warnin
         case SetConsume(block_id=bid, item=item, value=value):
             block = plan.block(bid)
             data = request_dict(block)
-            data['consume'] = {**data.get('consume', {}), item: value}
+            data['consume'] = {
+                **data.get('consume', {}),
+                item: value.model_dump(by_alias=True) if isinstance(value, TargetRef) else value,
+            }
             set_request(block, data)
         case RemoveConsume(block_id=bid, item=item):
             block = plan.block(bid)

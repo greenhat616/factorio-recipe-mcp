@@ -2,31 +2,37 @@
 
 import math
 from collections.abc import Iterable, Mapping, Sequence
-from typing import Any
+from typing import Any, Literal
 
 import numpy as np
 
 from ..database import Database
 from .disposal import disposal_defaults as disposal_defaults_for
 from .disposal import dispose
+from .energy import rate_factor
+from .graph import build_line_graph, options
 from .limits import infeasibility_report, limit_rows, usage_report
 from .lp import ELASTIC_NOTE, solve_lp
 from .matrix import analyze_matrix, recipe_matrix, solve_matrix
 from .model import OBJECTIVES, TIME, Planner
-from .report import add_totals, module_inventory, report
+from .report import add_line, add_totals, module_inventory, plan_line, report
 from .schema import (
     BeaconSpec,
     Defaults,
     DisposalMode,
+    EnergyMode,
+    GraphOptions,
     Limits,
     LineSpec,
     MachinePower,
     MachineStats,
     MatrixArgs,
     Mode,
+    ModuleCount,
     ModuleSpec,
     Objective,
     Per,
+    PerCopy,
     PlanLine,
     PlanResult,
     PlanStatus,
@@ -38,6 +44,7 @@ from .schema import (
     WeightName,
     Weights,
 )
+from .temperature import base_key, split_temperatures
 
 # A MILP over more candidate lines than this is slow and rarely needed: route choice is a continuous question.
 MAX_INTEGER_LINES = 400
@@ -74,18 +81,31 @@ def plan(
     disposal_defaults: Defaults | Mapping[str, Any] | None = None,
     integer_machines: bool = False,
     time_limit: float = 10.0,
+    graph: Literal['none', 'bipartite'] = 'none',
+    graph_options: GraphOptions | Mapping[str, Any] | None = None,
+    copies: int = 1,
+    energy_mode: EnergyMode = 'report',
+    solar_factor: float = 0.7,
+    wind_factor: float | None = None,
 ) -> PlanResult:
+    opts = options(graph_options)
+    if graph not in ('none', 'bipartite'):
+        raise ValueError('graph must be none or bipartite')
+    if isinstance(copies, bool) or not isinstance(copies, int) or copies < 1:
+        raise ValueError('copies must be an integer >= 1')
     factor = TIME[per]
     void_defaults = disposal_defaults_for(disposal_defaults)
     lim = limits if isinstance(limits, Limits) else Limits.model_validate(limits or {})
-    p = Planner(db, force, validate_stage, research_productivity, mining_productivity)
+    p = Planner(
+        db, force, validate_stage, research_productivity, mining_productivity, energy_mode, solar_factor, wind_factor
+    )
     tgt: dict[str, float] = {}
     for name, rate in targets.items():
         if mode == 'maximize' and (not math.isfinite(rate) or rate <= 0):
             raise ValueError(f'mode=maximize reads targets as ratios, which must be positive; got {name}={rate}')
         if not math.isfinite(rate) or rate < 0:
             raise ValueError('Target rates must be finite and nonnegative')
-        tgt[p.key(name)] = rate / factor
+        tgt[p.key(name)] = rate / rate_factor(p.key(name), factor)
     supply: dict[str, float] = {}
     for name, rate in (consume or {}).items():
         if not math.isfinite(rate) or rate <= 0:
@@ -93,7 +113,7 @@ def plan(
         key = p.key(name)
         if key in tgt:
             raise ValueError(f'{key} is both a target and consumed; an item is either produced or supplied')
-        supply[key] = rate / factor
+        supply[key] = rate / rate_factor(key, factor)
     if not tgt and mode == 'maximize':
         raise ValueError('mode=maximize needs ratio targets to scale')
     constrained = lim != Limits()
@@ -120,13 +140,18 @@ def plan(
         defaults or Defaults(),
         auto,
         # Consumed items are supplied, so their producers are not searched for.
-        import_keys | set(supply),
+        import_keys | {p.key(k) for k in lim.imports} | set(supply),
         set(exclude_recipes),
         max(1, min(max_depth, 30)),
         max(1, min(max_lines, 2000)),
         include_hidden,
         allow_mining,
     )
+    rows = split_temperatures(p, rows, set(tgt) | set(supply) | import_keys | surplus)
+    temperature_keys = {k for row in rows for k in row.balance if base_key(k) != k}
+    forbid |= {k for k in temperature_keys if base_key(k) in forbid or '@' in k}
+    import_keys |= {k for k in temperature_keys if '[' in k and base_key(k) in import_keys}
+    surplus |= {k for k in temperature_keys if '@' in k and base_key(k) in surplus}
     if not rows:
         raise ValueError('No usable production lines for the targets')
     if not tgt and not supply and all(r.fixed_machines is None for r in rows):
@@ -141,6 +166,16 @@ def plan(
                 'first, then pass its lines_for_matrix as lines with auto_discover=false.'
             )
         limit_list = limit_rows(p, rows, lim, factor)
+        if integer_machines and copies > 1:
+            tgt = {k: v / copies for k, v in tgt.items()}
+            supply = {k: v / copies for k, v in supply.items()}
+            for row in rows:
+                if row.fixed_machines is not None:
+                    row.fixed_machines /= copies
+                if row.max_machines is not None:
+                    row.max_machines /= copies
+            for cap in limit_list:
+                cap.limit /= copies
         sol = solve_lp(
             rows,
             tgt,
@@ -158,6 +193,20 @@ def plan(
         )
     else:
         sol = solve_matrix(rows, tgt, import_keys, surplus, p.warnings, supply)
+    if integer_machines and copies > 1:
+        tgt = {k: v * copies for k, v in tgt.items()}
+        supply = {k: v * copies for k, v in supply.items()}
+        sol.x = [v * copies for v in sol.x]
+        if sol.counts is not None:
+            sol.counts = [v * copies for v in sol.counts]
+        sol.imports = {k: v * copies for k, v in sol.imports.items()}
+        sol.surplus = {k: v * copies for k, v in sol.surplus.items()}
+        if sol.objective is not None:
+            sol.objective *= copies
+        sol.residual *= copies
+        for state in sol.constraints:
+            state.limit *= copies
+            state.used *= copies
     infeasible = sol.status == 'infeasible'
     status: PlanStatus = 'infeasible' if infeasible else 'time_limit' if sol.status == 'time_limit' else 'optimal'
     short = {f.name: f.shortfall for f in sol.infeasibility if f.kind != 'limit'}
@@ -177,7 +226,9 @@ def plan(
     unhandled: list[str] = []
     if disposal == 'report':
         byproducts = {k: v for k, v in sol.surplus.items() if k not in tgt}
-        void_rows, void_totals, unhandled = dispose(p, byproducts, void_defaults, factor)
+        void_rows, void_totals, unhandled = dispose(
+            Planner(db, force, validate_stage), byproducts, void_defaults, factor
+        )
     if frontier:
         out.warnings.append(f'max_depth reached; treated as imports where needed: {frontier[:20]}')
     if truncated:
@@ -192,7 +243,31 @@ def plan(
             source_copy_sha256=prov.get('source_copy_sha256'),
             exported_at=prov.get('exported_at'),
         )
-    return PlanResult(
+    per_copy = None
+    copies_totals = None
+    if copies > 1:
+        copy_counts: Sequence[int | None] = sol.counts or [None] * len(rows)
+        copy_lines = [
+            plan_line(row, x / copies, factor, n // copies if n is not None else None)
+            for row, x, n in zip(rows, sol.x, copy_counts, strict=True)
+            if abs(x) > 1e-9
+        ]
+        copy_totals = Totals()
+        for line in copy_lines:
+            add_line(copy_totals, line)
+        per_copy = PerCopy(lines=copy_lines, totals=copy_totals, module_inventory=module_inventory(copy_lines))
+        copies_totals = Totals.model_validate(
+            {
+                k: {name: amount * copies for name, amount in v.items()} if isinstance(v, dict) else v * copies
+                for k, v in copy_totals.model_dump().items()
+            }
+        )
+    result = PlanResult(
+        energy_mode=energy_mode,
+        energy_factors={'solar_factor': solar_factor, 'wind_factor': wind_factor} if energy_mode == 'balance' else {},
+        copies=copies,
+        per_copy=per_copy,
+        copies_totals=copies_totals,
         **dict(out),
         status=status,
         integer_machines=integer_machines,
@@ -211,15 +286,15 @@ def plan(
         per=per,
         force=p.force,
         validate_stage=validate_stage,
-        targets={k: v * factor for k, v in tgt.items()},
+        targets={k: v * rate_factor(k, factor) for k, v in tgt.items()},
         scale=sol.scale,
-        achieved_targets={k: v * factor for k, v in achieved.items()},
-        consume={k: v * factor for k, v in supply.items()},
+        achieved_targets={k: v * rate_factor(k, factor) for k, v in achieved.items()},
+        consume={k: v * rate_factor(k, factor) for k, v in supply.items()},
         limits_usage=usage,
         bottlenecks=bottlenecks,
-        candidate_lines=len(rows),
+        candidate_lines=sum(r.machine_type != 'temperature-match' for r in rows),
         excluded_candidates=excluded[:50],
-        lines_for_matrix=[r.pin() for r in rows if r.id in chosen],
+        lines_for_matrix=[r.pin() for r in rows if r.id in chosen and r.machine_type != 'temperature-match'],
         matrix_args=MatrixArgs(
             surplus_items=sorted(k for k in out.surplus if k not in tgt),
             imports=sorted(out.imports),
@@ -228,6 +303,17 @@ def plan(
         else None,
         snapshot_provenance=provenance,
     )
+    if per_copy is not None:
+        inventory = module_inventory(void_rows)
+        for name, amount in per_copy.module_inventory.items():
+            old = inventory.get(name, ModuleCount(count=0, count_ceil=0))
+            inventory[name] = ModuleCount(
+                count=old.count + amount.count * copies, count_ceil=old.count_ceil + amount.count_ceil * copies
+            )
+        result.module_inventory = inventory
+    if graph == 'bipartite':
+        result.graph = build_line_graph(result, opts)
+    return result
 
 
 def machine_stats(
@@ -244,12 +330,23 @@ def machine_stats(
     validate_stage: bool = True,
     mining_productivity: float = 0.0,
     research_productivity: bool = True,
+    energy_mode: EnergyMode = 'report',
+    fuel: str | None = None,
+    neighbours: int = 0,
+    solar_factor: float = 0.7,
+    wind_factor: float | None = None,
+    temperature: float | None = None,
 ) -> MachineStats:
     """Single line calculator (one recipe in one machine), optional machine count for a rate."""
     factor = TIME[per]
-    p = Planner(db, force, validate_stage, research_productivity, mining_productivity)
+    p = Planner(
+        db, force, validate_stage, research_productivity, mining_productivity, energy_mode, solar_factor, wind_factor
+    )
     spec = LineSpec(
         recipe=recipe,
+        fuel=fuel,
+        neighbours=neighbours,
+        temperature=temperature,
         machine=machine or None,
         modules=modules,
         beacons=None if beacons is None else list(beacons),
@@ -261,7 +358,7 @@ def machine_stats(
         per_machine = r.balance.get(k, 0) * r.crafts_per_machine
         if per_machine == 0:
             raise ValueError(f'{recipe} does not touch {k}')
-        machines = abs(rate / factor / per_machine)
+        machines = abs(rate / rate_factor(k, factor) / per_machine)
         for_rate = RateRequirement(
             item=k,
             rate=rate,
@@ -270,6 +367,8 @@ def machine_stats(
             power_MW=machines * r.power_W / 1e6,
         )
     return MachineStats(
+        fuel=r.fuel,
+        fuel_per_machine=r.fuel_per_machine * factor,
         recipe=r.recipe,
         machine=r.machine,
         machine_type=r.machine_type,
@@ -284,13 +383,15 @@ def machine_stats(
         blocked=r.blocked,
         per=per,
         crafts_per_machine=r.crafts_per_machine * factor,
-        per_machine={k: v * r.crafts_per_machine * factor for k, v in r.balance.items()},
+        per_machine={k: v * r.crafts_per_machine * rate_factor(k, factor) for k, v in r.balance.items()},
         power_per_machine_MW=MachinePower(active=r.active_W / 1e6, drain=r.drain_W / 1e6, beacons=r.beacon_W / 1e6),
         pollution_per_minute_per_machine=r.pollution_per_minute,
         beacon_items=r.beacon_items,
         module_counts=r.module_counts,
         valid_at_stage=not r.blocked if validate_stage else None,
-        alternatives=[m.name for m in p.candidates(p.recipe_view(recipe))],
+        alternatives=[r.machine]
+        if r.energy_type == 'producer'
+        else [m.name for m in p.candidates(p.recipe_view(recipe))],
         warnings=p.warnings,
         for_rate=for_rate,
     )

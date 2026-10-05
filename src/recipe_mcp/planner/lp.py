@@ -162,11 +162,17 @@ def solve_lp(
         k
         for k in keys
         if (k not in produced or k in imports or k in caps)
+        and (not k.startswith('energy:') or k in imports or k in caps)
+        and (not k.startswith('fluid:nullius-energy~') or k in imports or k in caps)
         and k not in forbid_imports
         and k not in targets
         and k not in consume
     ]
-    surplus_keys = [k for k in keys if (allow_surplus or k in surplus_items or k in targets) and k not in consume]
+    surplus_keys = [
+        k
+        for k in keys
+        if (allow_surplus or k in surplus_items or k in targets or k.startswith('energy:')) and k not in consume
+    ]
 
     def build(elastic: bool, whole: bool = False) -> LPBuilder:
         """elastic=True gives every limit, target and consume amount a slack priced by its relative size;
@@ -302,7 +308,12 @@ def solve_lp(
         marginal = None if integer else -float(duals.upper.marginals[col]) if col is not None else 0.0
         states.append(
             ConstraintState(
-                name=cap_row.name, limit=cap_row.limit, used=used, marginal=marginal, rate=True, unit=cap_row.unit
+                name=cap_row.name,
+                limit=cap_row.limit,
+                used=used,
+                marginal=marginal,
+                rate=cap_row.rate,
+                unit=cap_row.unit,
             )
         )
     prices = dict(zip(keys, res.eqlin.marginals, strict=True)) if getattr(res, 'eqlin', None) is not None else {}
@@ -374,8 +385,8 @@ def elastic_solution(
                         achievable=v - slack,
                         shortfall=slack,
                         relative=slack / v,
-                        rate=True,
-                        unit='unit',
+                        rate=not k.startswith('energy:'),
+                        unit='MW' if k.startswith('energy:') else 'unit',
                     )
                 )
     return Solution(

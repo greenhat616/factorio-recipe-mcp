@@ -1,6 +1,6 @@
 """Planner inputs (line specs, defaults), the normalised line model, solver solutions and results."""
 
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -12,6 +12,8 @@ Per = Literal['second', 'minute', 'hour']
 SolverName = Literal['lp', 'matrix']
 Objective = Literal['balanced', 'machines', 'power', 'imports']
 Mode = Literal['targets', 'maximize']
+EnergyMode = Literal['report', 'balance']
+ProductivityModel = Literal['expected', 'helmod']
 DisposalMode = Literal['report', 'none']
 
 
@@ -31,6 +33,7 @@ class BeaconSpec(Spec):
 
 
 class LineSpec(Spec):
+    productivity_model: ProductivityModel | None = None
     recipe: str = Field(description='Recipe name, or mining:<resource>')
     id: str | None = None
     machine: str | None = None
@@ -40,9 +43,14 @@ class LineSpec(Spec):
     max_machines: float | None = Field(None, ge=0)
     cost_weight: float = Field(1, ge=0)
     ignore_module_rules: bool = False
+    fuel: str | None = None
+    neighbours: int = Field(0, ge=0)
+    temperature: float | None = Field(None, allow_inf_nan=False)
 
 
 class Defaults(Spec):
+    productivity_model: ProductivityModel = 'expected'
+    fuel: list[str] = []
     machine_preference: Literal['fastest', 'efficient', 'slowest'] = 'fastest'
     machines: list[str] = Field([], description='Preferred machine names, first compatible wins')
     modules: list[str] = Field([], description='Priority list; the first compatible module fills all slots')
@@ -134,12 +142,13 @@ class RecipeEntry(BaseModel):
     def average(self) -> float:
         return self.amount if self.amount is not None else (self.amount_min + self.amount_max) / 2
 
-    def output(self, productivity: float = 0.0) -> float:
+    def output(self, productivity: float = 0.0, model: ProductivityModel = 'expected') -> float:
         """Expected output per craft; productivity skips ignored_by_productivity."""
         avg = self.average
         ignored = min(avg, self.ignored_by_productivity)
         p = self.probability
-        return p * avg + self.extra_count_fraction + p * max(0.0, avg - ignored) * productivity
+        bonus = max(0.0, p * avg - self.ignored_by_productivity) if model == 'helmod' else p * max(0.0, avg - ignored)
+        return p * avg + self.extra_count_fraction + bonus * productivity
 
 
 class RecipeView(BaseModel):
@@ -198,6 +207,8 @@ class Line(BaseModel):
     crafts_per_machine: float
     energy_type: str
     active_W: float
+    electric_consumption_W: float = 0.0
+    productivity_model: ProductivityModel = 'expected'
     drain_W: float
     beacon_W: float
     pollution_per_minute: float
@@ -208,6 +219,10 @@ class Line(BaseModel):
     max_machines: float | None
     cost_weight: float
     blocked: list[str]
+    fuel: str | None = None
+    fuel_per_machine: float = 0.0
+    neighbours: int = 0
+    temperature: float | None = None
     beacon_items: dict[str, float] = Field({}, description='Beacon entities per machine, by beacon item')
     module_counts: dict[str, float] = Field({}, description='Modules per machine: own slots + shared beacon slots')
 
@@ -222,7 +237,7 @@ class Line(BaseModel):
     @property
     def power_W(self) -> float:
         """Electric power per running machine; fuel-burning machines only draw for their beacons."""
-        return (self.active_W + self.drain_W if self.electric else 0.0) + self.beacon_W
+        return (self.active_W + self.drain_W if self.electric else 0.0) + self.beacon_W + self.electric_consumption_W
 
     def pin(self) -> LineSpec:
         """The spec that rebuilds exactly this line."""
@@ -230,6 +245,10 @@ class Line(BaseModel):
             id=self.id,
             recipe=self.recipe,
             machine=self.machine,
+            fuel=self.fuel,
+            productivity_model=self.productivity_model,
+            neighbours=self.neighbours,
+            temperature=self.temperature,
             modules=self.modules,
             beacons=[
                 BeaconSpec(
@@ -277,6 +296,10 @@ class Solution(BaseModel):
 
 
 class PlanLine(BaseModel):
+    productivity_model: ProductivityModel = 'expected'
+    machine_type: str = ''
+    fuel: str | None = None
+    fuel_per_machine: float = 0.0
     id: str
     recipe: str
     machine: str
@@ -301,6 +324,7 @@ class PlanLine(BaseModel):
 
 
 class ItemFlow(BaseModel):
+    unit: str = ''
     item: str
     produced: float = 0.0
     consumed: float = 0.0
@@ -311,6 +335,10 @@ class ItemFlow(BaseModel):
 
 
 class Totals(BaseModel):
+    electric_generation_MW: float = 0.0
+    heat_generation_MW: float = 0.0
+    heat_consumption_MW: float = 0.0
+    net_electric_MW: float = 0.0
     machines: float = 0.0
     machines_ceil: int = 0
     power_MW: float = 0.0
@@ -328,7 +356,14 @@ class ModuleCount(BaseModel):
     count_ceil: int = Field(description='From rounded-up machines and beacons')
 
 
+class PerCopy(BaseModel):
+    lines: list[PlanLine]
+    totals: Totals
+    module_inventory: dict[str, ModuleCount]
+
+
 class Report(BaseModel):
+    temperatures: dict[str, list[ItemFlow]] = {}
     lines: list[PlanLine]
     items: list[ItemFlow]
     imports: dict[str, float]
@@ -379,7 +414,44 @@ class SnapshotProvenance(BaseModel):
 PlanStatus = Literal['optimal', 'infeasible', 'time_limit']
 
 
+class GraphOptions(Spec):
+    allocate: bool = False
+    format: Literal['mermaid', 'dot'] | None = None
+
+
+class GraphNode(BaseModel):
+    id: str
+    kind: str
+    label: str
+    depth: int | None = None
+    data: dict[str, Any] = {}
+
+
+class GraphEdge(BaseModel):
+    source: str
+    target: str
+    item: str
+    rate: float
+    unit: str
+    kind: Literal['flow', 'allocated', 'link'] = 'flow'
+    allocated: bool = False
+    data: dict[str, Any] = {}
+
+
+class ProductionGraph(BaseModel):
+    schema_version: Literal[1] = 1
+    nodes: list[GraphNode] = []
+    edges: list[GraphEdge] = []
+    notes: list[str] = []
+
+
 class PlanResult(Report):
+    graph: ProductionGraph | None = Field(None, exclude_if=lambda v: v is None)
+    energy_mode: EnergyMode = 'report'
+    energy_factors: dict[str, float | None] = {}
+    copies: int = 1
+    per_copy: PerCopy | None = None
+    copies_totals: Totals | None = None
     status: PlanStatus = 'optimal'
     solver: SolverName
     mode: Mode = 'targets'
@@ -435,6 +507,8 @@ class RateRequirement(BaseModel):
 
 
 class MachineStats(BaseModel):
+    fuel: str | None = None
+    fuel_per_machine: float = 0.0
     recipe: str
     machine: str
     machine_type: str

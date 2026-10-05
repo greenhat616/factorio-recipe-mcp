@@ -294,3 +294,44 @@ The current-stage run keeps the exported recipe productivity bonuses. Passing th
 - [LuaTechnology](https://lua-api.factorio.com/2.0.77/classes/LuaTechnology.html)
 
 Runtime fields were checked against the `runtime-api.json` shipped with the local 2.0.77 install, to avoid APIs from newer versions.
+
+
+### Energy balance and repeated blocks
+
+`solve_production` accepts `energy_mode="balance"`: electric and heat flows use
+`energy:electric` and `energy:heat`, always in MW even with `per="minute"`.
+Energy cannot be imported unless explicitly listed in `imports` or `limits.imports`.
+Use `heat:<reactor>`, `generate:<generator>`, `solar:<panel>` or `wind:<interface>`
+as lines, or let discovery find them. Solar output defaults to 0.7 of peak;
+wind requires an explicit `wind_factor`. Choose burner fuel with `lines[].fuel`
+or the priority list `defaults.fuel`; burnt results enter the balance.
+
+Example: `{"targets":{"energy:electric":10},"energy_mode":"balance"}`.
+`copies=4` reports four identical construction modules; input rates and limits
+are totals, while `per_copy` shows each module and `copies_totals` includes its
+individual construction rounding. Integer solving applies the limits per copy.
+
+Plan targets and consume values accept `{from:["block"], of:"surplus", factor:0.5}`;
+`of` defaults to `imports` for targets and `surplus` for consume. `plan_edit`
+supports `add_supply_block` and `add_consumer_block` with `for_block`, `item`,
+`new_id` and optional `request` overrides. Consumers need `request.lines` or
+`request.targets`. Factory suggestions contain supply edits and consumer templates.
+
+Nullius turbine generator rows represent internal helper entities created by the
+mod, alongside the turbine recipe rows. Their machine counts are model capacities,
+not two separate purchasable entities. Geothermal heat assumes suitable placement;
+solar collector input uses full-flow consumption. These assumptions appear in warnings.
+
+
+Helmod 2.2.14 parity checks execute the original Lua methods with controlled
+prototype stubs (`scripts/validation/helmod_reference.py`). Set
+`defaults.productivity_model="helmod"` (or the same field on a line) to reproduce
+its probability/productivity deduction order. The default `expected` model
+retains existing results. Pinned lines preserve the choice.
+
+`graph="bipartite"` returns a versioned production flow graph; `plan_solve`
+accepts `graph="blocks"` or `"full"`. `graph_options.allocate=true` includes
+proportional allocation edges as an explicit mixing assumption. Graphs use
+achieved flows, including relaxed infeasible results. Fluid temperatures retain
+separate keys and zero-cost matching edges; internal Nullius turbine energy
+channels are isolated by turbine type and tier.

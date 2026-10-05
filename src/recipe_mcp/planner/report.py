@@ -4,6 +4,7 @@ import math
 from collections import defaultdict
 from collections.abc import Iterable, Mapping, Sequence
 
+from .energy import rate_factor
 from .model import EPS, Planner
 from .schema import ItemFlow, Line, ModuleCount, PlanLine, Report, Solution, Totals
 
@@ -14,11 +15,16 @@ def plan_line(r: Line, x: float, factor: float, count: int | None = None) -> Pla
     machines = x / r.crafts_per_machine
     if count is None:
         count = math.ceil(machines - 1e-6) if machines > 0 else 0
+    if r.machine_type == 'temperature-match':
+        machines, count = 0.0, 0
     fuel = machines * r.active_W if not r.electric and r.energy_type != 'void' else 0
     return PlanLine(
         id=r.id,
         recipe=r.recipe,
         machine=r.machine,
+        machine_type=r.machine_type,
+        fuel=r.fuel,
+        fuel_per_machine=r.fuel_per_machine * factor,
         modules=r.modules,
         beacons=r.beacons,
         crafts=x * factor,
@@ -26,14 +32,15 @@ def plan_line(r: Line, x: float, factor: float, count: int | None = None) -> Pla
         machines_ceil=count,
         speed_multiplier=r.speed_multiplier,
         productivity=r.productivity,
+        productivity_model=r.productivity_model,
         consumption_multiplier=r.consumption_multiplier,
         power_MW=machines * r.power_W / 1e6,
         installed_power_MW=count * r.power_W / 1e6,
         energy_type=r.energy_type,
         fuel_MW=fuel / 1e6,
         pollution_per_minute=machines * r.pollution_per_minute,
-        inputs={k: -v * x * factor for k, v in r.balance.items() if v < 0},
-        outputs={k: v * x * factor for k, v in r.balance.items() if v > 0},
+        inputs={k: -v * x * rate_factor(k, factor) for k, v in r.balance.items() if v < 0},
+        outputs={k: v * x * rate_factor(k, factor) for k, v in r.balance.items() if v > 0},
         beacon_count=machines * r.beacon_entities,
         beacon_count_ceil=math.ceil(count * r.beacon_entities - 1e-6) if count else 0,
         beacon_power_MW=machines * r.beacon_W / 1e6,
@@ -41,6 +48,11 @@ def plan_line(r: Line, x: float, factor: float, count: int | None = None) -> Pla
 
 
 def add_line(total: Totals, row: PlanLine) -> None:
+    total.electric_generation_MW += row.outputs.get('energy:electric', 0)
+    total.heat_generation_MW += row.outputs.get('energy:heat', 0)
+    total.heat_consumption_MW += row.fuel_MW if row.energy_type == 'heat' else 0
+    if 'energy:electric' in row.inputs or 'energy:electric' in row.outputs:
+        total.net_electric_MW += row.outputs.get('energy:electric', 0) - row.power_MW
     total.machines += row.machines
     total.machines_ceil += row.machines_ceil
     total.power_MW += row.power_MW
@@ -123,12 +135,15 @@ def report(
         items.append(
             ItemFlow(
                 item=k,
-                produced=f.produced * factor,
-                consumed=f.consumed * factor,
-                imported=f.imported * factor,
-                supplied=f.supplied * factor,
-                surplus=f.surplus * factor,
-                target=targets.get(k, 0) * factor,
+                unit='MW'
+                if k.startswith('energy:')
+                else 'per ' + {1: 'second', 60: 'minute', 3600: 'hour'}[int(factor)],
+                produced=f.produced * rate_factor(k, factor),
+                consumed=f.consumed * rate_factor(k, factor),
+                imported=f.imported * rate_factor(k, factor),
+                supplied=f.supplied * rate_factor(k, factor),
+                surplus=f.surplus * rate_factor(k, factor),
+                target=targets.get(k, 0) * rate_factor(k, factor),
             )
         )
     warnings = list(planner.warnings)
@@ -141,22 +156,26 @@ def report(
             if supply and not any(lo <= t <= hi for t in supply):
                 wanted = need.model_dump(exclude_none=True)
                 warnings.append(f'{r.id}: needs {k} at {wanted}, producers in plan supply {sorted(set(supply))}')
-    imports = {k: v * factor for k, v in solution.imports.items() if abs(v) > EPS}
+    imports = {k: v * rate_factor(k, factor) for k, v in solution.imports.items() if abs(v) > EPS}
     out = Report(
         lines=rows,
         items=items,
         imports=imports,
-        surplus={k: v * factor for k, v in solution.surplus.items() if abs(v) > EPS},
+        surplus={k: v * rate_factor(k, factor) for k, v in solution.surplus.items() if abs(v) > EPS},
         totals=total,
         max_balance_error=solution.residual,
         warnings=warnings,
         objective=solution.objective,
         matrix=solution.matrix,
     )
+    for flow in items:
+        if flow.item.startswith('fluid:') and ('@' in flow.item or '[' in flow.item):
+            base = flow.item.split('@', 1)[0].split('[', 1)[0]
+            out.temperatures.setdefault(base, []).append(flow)
     if solution.prices is not None:
         prices = solution.prices
         keep = list(dict.fromkeys(list(targets) + list(imports)))
         others = sorted((k for k, v in prices.items() if k not in keep and abs(v) > EPS), key=lambda k: -abs(prices[k]))
         keep += others[: max(0, prices_limit - len(keep))]
-        out.shadow_prices = {k: prices[k] / factor for k in keep if k in prices}
+        out.shadow_prices = {k: prices[k] / rate_factor(k, factor) for k in keep if k in prices}
     return out

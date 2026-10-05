@@ -1,16 +1,19 @@
 """Solve a plan's blocks in dependency order, resolve linked targets and sum them into one factory ledger."""
 
+import re
 from collections import defaultdict
 from collections.abc import Mapping, Sequence
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
 from ..planner import plan as solve_block
 from ..planner.disposal import disposal_defaults, dispose
+from ..planner.energy import rate_factor
+from ..planner.graph import factory_graph, options
 from ..planner.model import TIME, Planner
 from ..planner.report import add_totals, module_inventory
-from ..planner.schema import ModuleCount, PlanLine, PlanResult, Totals
+from ..planner.schema import GraphEdge, GraphOptions, ModuleCount, PlanLine, PlanResult, ProductionGraph, Totals
 from .models import Block, BlockResult, PlanFile, Staleness, TargetRef
 from .store import PlanStore, now
 
@@ -49,9 +52,11 @@ class FactoryLedger(BaseModel):
     module_inventory: dict[str, ModuleCount]
     complete: bool = Field(description='False when a block failed; its share is missing from the ledger')
     assumptions: list[str] = ASSUMPTIONS
+    suggestions: list[dict[str, Any]] = []
 
 
 class FactoryResult(BaseModel):
+    graph: ProductionGraph | None = Field(None, exclude_if=lambda v: v is None)
     plan: str
     revision: int
     stale: Staleness
@@ -64,7 +69,7 @@ class FactoryResult(BaseModel):
 def dependencies(plan: PlanFile, block: Block) -> set[str]:
     enabled = {b.id for b in plan.blocks if b.enabled}
     out: set[str] = set()
-    for v in block.request.targets.values():
+    for v in [*block.request.targets.values(), *block.request.consume.values()]:
         if isinstance(v, TargetRef):
             out |= (enabled - {block.id}) if v.from_ == '*' else set(v.from_)
     return out
@@ -110,32 +115,56 @@ def cycle_path(graph: Mapping[str, set[str]]) -> list[str]:
         path.append(nxt)
 
 
-def resolve_targets(
-    plan: PlanFile, block: Block, results: Mapping[str, PlanResult], key: Planner, warnings: list[str]
+def reference_amount(r: PlanResult, k: str, source: str) -> float:
+    if source == 'net_outputs':
+        return max(0.0, r.achieved_targets.get(k, 0) + r.surplus.get(k, 0) - r.imports.get(k, 0) - r.consume.get(k, 0))
+    return float(getattr(r, source).get(k, 0))
+
+
+def resolve_amounts(
+    plan: PlanFile,
+    block: Block,
+    results: Mapping[str, PlanResult],
+    key: Planner,
+    warnings: list[str],
+    consume: bool = False,
 ) -> dict[str, float]:
     out: dict[str, float] = {}
-    for name, v in block.request.targets.items():
+    for name, v in (block.request.consume if consume else block.request.targets).items():
         if not isinstance(v, TargetRef):
             out[name] = float(v)
             continue
         k = key.key(name)
-        refs = sorted(dependencies(plan, block)) if v.from_ == '*' else v.from_
+        refs = sorted(b.id for b in plan.blocks if b.enabled and b.id != block.id) if v.from_ == '*' else v.from_
         total = v.plus
         for ref in refs:
             r = results.get(ref)
-            if r is None:
-                warnings.append(f'{block.id}: {name} refers to block {ref}, which has no result; counted as 0')
-            elif k not in r.imports:
-                warnings.append(f'{block.id}: block {ref} does not import {k}; counted as 0')
-            else:
-                total += r.imports[k]
-        out[name] = total
+            amount = reference_amount(r, k, v.of) if r is not None else 0.0
+            if not amount:
+                warnings.append(f'{block.id}: block {ref} has no {v.of} for {k}; counted as 0')
+            total += v.factor * amount
+        if consume and total <= 1e-9:
+            warnings.append(f'{block.id}: consume {k} resolved to {total}; omitted')
+        else:
+            out[name] = total
     return out
 
 
+resolve_targets = resolve_amounts
+
+
 def solve_plan(
-    store: PlanStore, name: str, blocks: Sequence[str] = (), detail: Detail = 'summary', save_results: bool = True
+    store: PlanStore,
+    name: str,
+    blocks: Sequence[str] = (),
+    detail: Detail = 'summary',
+    save_results: bool = True,
+    graph: Literal['none', 'blocks', 'full'] = 'none',
+    graph_options: GraphOptions | None = None,
 ) -> FactoryResult:
+    opts = options(graph_options)
+    if graph not in ('none', 'blocks', 'full'):
+        raise ValueError('graph must be none, blocks or full')
     plan = store.read(name)
     stale = store.staleness(plan.fingerprint)
     warnings: list[str] = []
@@ -155,8 +184,11 @@ def solve_plan(
         try:
             resolved = resolve_targets(plan, block, results, key, warnings)
             resolved_by_block[bid] = resolved
-            args = {f: getattr(block.request, f) for f in block.request.model_fields_set if f != 'targets'}
-            r = solve_block(store.db, resolved, force=plan.force, per=plan.per, **args)
+            args = {
+                f: getattr(block.request, f) for f in block.request.model_fields_set if f not in ('targets', 'consume')
+            }
+            supply = resolve_amounts(plan, block, results, key, warnings, consume=True)
+            r = solve_block(store.db, resolved, force=plan.force, per=plan.per, consume=supply, **args)
         except ValueError as e:
             outcomes.append(BlockOutcome(id=bid, status='error', error=str(e)))
             continue
@@ -167,7 +199,7 @@ def solve_plan(
                 status=r.status,
                 resolved_targets=resolved,
                 achieved_targets=r.achieved_targets,
-                totals=r.totals,
+                totals=r.copies_totals or r.totals,
                 imports=r.imports,
                 surplus=r.surplus,
                 consume=r.consume,
@@ -175,7 +207,34 @@ def solve_plan(
                 result=r if detail == 'full' else None,
             )
         )
-    factory = ledger(store, plan, list(results.values()), complete=len(results) == len(order))
+    factory = ledger(
+        store,
+        plan,
+        list(results.values()),
+        complete=len(results) == len(order) and all(r.status != 'infeasible' for r in results.values()),
+    )
+    used_ids = {b.id for b in plan.blocks}
+    for action, amounts, source in [
+        ('add_supply_block', factory.net_inputs, 'imports'),
+        ('add_consumer_block', {k: v for r in factory.disposal for k, v in r.inputs.items()}, 'surplus'),
+    ]:
+        for item in sorted(amounts):
+            if item.startswith('energy:'):
+                continue
+            owner = next((bid for bid, result in results.items() if getattr(result, source).get(item, 0) > 0), None)
+            if owner is None:
+                continue
+            base = ('supply-' if source == 'imports' else 'consume-') + re.sub(r'[^A-Za-z0-9_.-]', '-', item)[:45]
+            new = base
+            suffix = 2
+            while new in used_ids:
+                new = f'{base}-{suffix}'
+                suffix += 1
+            used_ids.add(new)
+            suggestion: dict[str, Any] = dict(op=action, for_block=owner, item=item, new_id=new)
+            if source == 'surplus':
+                suggestion['request'] = {'lines': []}
+            factory.suggestions.append(suggestion)
     revision = plan.revision
     if save_results:
         fp = store.fingerprint()
@@ -188,8 +247,51 @@ def solve_plan(
                 b.result = BlockResult(solved_at=stamp, fingerprint=fp, status='error', error=o.error)
         plan.fingerprint = fp
         revision = store.commit(plan, plan.revision).revision
+    links: list[GraphEdge] = []
+    if graph != 'none':
+        for bid in order:
+            block = plan.block(bid)
+            for field in ('targets', 'consume'):
+                for material, ref in getattr(block.request, field).items():
+                    if not isinstance(ref, TargetRef):
+                        continue
+                    refs = (
+                        sorted(b.id for b in plan.blocks if b.enabled and b.id != bid)
+                        if ref.from_ == '*'
+                        else ref.from_
+                    )
+                    k = key.key(material)
+                    for i, parent in enumerate(refs):
+                        amount = ref.factor * reference_amount(results[parent], k, ref.of) if parent in results else 0
+                        amount += ref.plus if i == 0 else 0
+                        links.append(
+                            GraphEdge(
+                                source='block:' + parent,
+                                target='block:' + bid,
+                                item=k,
+                                rate=amount,
+                                unit='MW' if k.startswith('energy:') else f'per {plan.per}',
+                                kind='link',
+                                data={
+                                    'of': ref.of,
+                                    'factor': ref.factor,
+                                    'plus': ref.plus,
+                                    'resolved': amount,
+                                    'field': field,
+                                },
+                            )
+                        )
     return FactoryResult(
-        plan=name, revision=revision, stale=stale, order=order, blocks=outcomes, factory=factory, warnings=warnings
+        graph=factory_graph(plan.per, outcomes, results, factory, links, graph == 'full', opts)
+        if graph != 'none'
+        else None,
+        plan=name,
+        revision=revision,
+        stale=stale,
+        order=order,
+        blocks=outcomes,
+        factory=factory,
+        warnings=warnings,
     )
 
 
@@ -204,9 +306,10 @@ def ledger(store: PlanStore, plan: PlanFile, results: Sequence[PlanResult], comp
         for k, v in r.surplus.items():
             out[k] += v
             surplus[k] += v
-        for k, v in [*r.imports.items(), *r.consume.items()]:
+        actual_supply = {item.item: item.supplied for item in r.items if item.supplied}
+        for k, v in [*r.imports.items(), *actual_supply.items()]:
             inp[k] += v
-        totals = add_totals(totals, r.totals)
+        totals = add_totals(totals, getattr(r, 'copies_totals', None) or r.totals)
     items = sorted(set(out) | set(inp))
     eps = 1e-9
     net_in = {k: inp[k] - out[k] for k in items if inp[k] - out[k] > eps}
@@ -218,9 +321,17 @@ def ledger(store: PlanStore, plan: PlanFile, results: Sequence[PlanResult], comp
     validate = all(b.request.validate_stage for b in plan.blocks if b.enabled)
     p = Planner(store.db, plan.force, validate_stage=validate)
     rows, void_totals, unhandled = dispose(
-        p, {k: v / factor for k, v in leftover.items()}, disposal_defaults(None), factor
+        p, {k: v / rate_factor(k, factor) for k, v in leftover.items()}, disposal_defaults(None), factor
     )
-    lines = [line for r in results for line in r.lines]
+    inventory = module_inventory(rows)
+    for r in results:
+        modules = r.per_copy.module_inventory if r.per_copy else module_inventory(r.lines)
+        multiplier = r.copies if r.per_copy else 1
+        for name, amount in modules.items():
+            old = inventory.get(name, ModuleCount(count=0, count_ceil=0))
+            inventory[name] = ModuleCount(
+                count=old.count + amount.count * multiplier, count_ceil=old.count_ceil + amount.count_ceil * multiplier
+            )
     return FactoryLedger(
         net_inputs=net_in,
         net_outputs=net_out,
@@ -229,8 +340,14 @@ def ledger(store: PlanStore, plan: PlanFile, results: Sequence[PlanResult], comp
         disposal_unhandled=unhandled,
         totals=totals,
         totals_with_disposal=add_totals(totals, void_totals),
-        module_inventory=module_inventory([*lines, *rows]),
+        module_inventory=inventory,
         complete=complete,
+        assumptions=ASSUMPTIONS
+        + (
+            ['Energy flows share an electric grid and heat network; energy rates are MW.']
+            if any(r.energy_mode == 'balance' for r in results)
+            else []
+        ),
     )
 
 
@@ -265,7 +382,7 @@ def saved_side(store: PlanStore, ref: str) -> tuple[PlanFile, Totals, dict[str, 
         stale = store.staleness(r.fingerprint)
         if stale in ('stage_changed', 'prototypes_changed'):
             raise ValueError(f'{ref}: block {b.id} result is {stale}; run plan_solve on {name} first')
-        totals = add_totals(totals, r.totals)
+        totals = add_totals(totals, getattr(r, 'copies_totals', None) or r.totals)
         for k, v in r.imports.items():
             imports[k] += v
         for k, v in r.surplus.items():
@@ -286,7 +403,7 @@ def flat_totals(t: Totals) -> dict[str, float]:
 def deltas(a: Mapping[str, float], b: Mapping[str, float], scale_b: float = 1.0) -> dict[str, Delta]:
     out: dict[str, Delta] = {}
     for k in sorted(set(a) | set(b)):
-        va, vb = a.get(k, 0.0), b.get(k, 0.0) * scale_b
+        va, vb = a.get(k, 0.0), b.get(k, 0.0) * rate_factor(k, scale_b)
         out[k] = Delta(a=va, b=vb, diff=vb - va)
     return out
 

@@ -9,6 +9,7 @@ from ..planner.schema import (
     BeaconSpec,
     Defaults,
     DisposalMode,
+    EnergyMode,
     Limits,
     LineSpec,
     MatrixArgs,
@@ -34,10 +35,16 @@ class TargetRef(Spec):
     model_config = ConfigDict(extra='forbid', populate_by_name=True)
 
     from_: list[str] | Literal['*'] = Field(alias='from', description='Block ids, or "*" for every other enabled block')
-    plus: float = 0.0
+    of: Literal['imports', 'surplus', 'net_outputs'] = 'imports'
+    factor: float = Field(1.0, ge=0, allow_inf_nan=False)
+    plus: float = Field(0.0, allow_inf_nan=False)
 
 
 TargetValue = float | TargetRef
+
+
+class ConsumeRef(TargetRef):
+    of: Literal['imports', 'surplus', 'net_outputs'] = 'surplus'
 
 
 class BlockRequest(Spec):
@@ -65,11 +72,15 @@ class BlockRequest(Spec):
     validate_stage: bool = True
     mode: Mode = 'targets'
     limits: Limits | None = None
-    consume: dict[str, float] = {}
+    consume: dict[str, float | ConsumeRef] = {}
     disposal: DisposalMode = 'report'
     disposal_defaults: Defaults | None = None
     integer_machines: bool = False
     time_limit: float = 10.0
+    copies: int = Field(1, ge=1, strict=True)
+    energy_mode: EnergyMode = 'report'
+    solar_factor: float = Field(0.7, gt=0, allow_inf_nan=False)
+    wind_factor: float | None = Field(None, gt=0, allow_inf_nan=False)
 
 
 class Fingerprint(BaseModel):
@@ -125,7 +136,7 @@ class BlockResult(BaseModel):
             scale=r.scale,
             resolved_targets=resolved,
             achieved_targets=r.achieved_targets,
-            totals=r.totals,
+            totals=r.copies_totals or r.totals,
             disposal_totals=r.disposal_totals,
             imports=r.imports,
             surplus=r.surplus,
@@ -192,6 +203,14 @@ class BlockInput(Spec):
 class AddBlock(Spec):
     op: Literal['add_block']
     block: BlockInput
+
+
+class AddLinkedBlock(Spec):
+    op: Literal['add_supply_block', 'add_consumer_block']
+    for_block: str
+    item: str
+    new_id: str = Field(pattern=ID_PATTERN)
+    request: dict[str, Any] = {}
 
 
 class RemoveBlock(Spec):
@@ -269,7 +288,7 @@ class SetConsume(Spec):
     op: Literal['set_consume']
     block_id: str
     item: str
-    value: float
+    value: float | ConsumeRef
 
 
 class RemoveConsume(Spec):
@@ -316,6 +335,7 @@ class ReplaceModule(Spec):
 
 EditOp = Annotated[
     AddBlock
+    | AddLinkedBlock
     | RemoveBlock
     | RenameBlock
     | SetEnabled

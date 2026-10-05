@@ -20,7 +20,7 @@ async def run(db: Database, force: str, plan_name: str) -> None:
         async with ClientSession(read, write) as session:
             await session.initialize()
             listing = await session.list_tools()
-            assert len(listing.tools) == 22
+            assert len(listing.tools) == 24
 
             async def call(name: str, args: JSON, error: bool = False) -> Any:
                 result = await session.call_tool(name, args)

@@ -4,7 +4,7 @@ Factorio recipe, technology and save-progress queries plus Helmod / Factory Plan
 
 ## Entry points
 
-The same 22 tools are reachable two ways:
+The same 24 tools are reachable two ways:
 
 | Entry | Command | Use |
 |---|---|---|
@@ -80,6 +80,8 @@ uv run --directory recipe-mcp recipe-mcp-cli validate_plan '{"recipe_rates":{"nu
 | `plan_solve` | Solve a plan's blocks in dependency order and sum them into a factory ledger |
 | `plan_compare` | Saved results of two plans or blocks side by side: totals, imports, surplus |
 | `plan_delete` | Move a plan to the trash folder |
+| `helmod_import` | Save a Helmod model string as a plan |
+| `helmod_export` | A plan as a Helmod model string |
 
 Every result is a pydantic model, so each tool publishes an output schema and returns `structuredContent` alongside the JSON text. Object IDs stay in `name`; recipe, technology and machine queries also return `display_name`, `language`, `resolved_language` and `name_status`. The original `localised_name` expression remains available. `net_balance` ignores modules and force productivity bonuses and does not treat fluids at different temperatures as interchangeable.
 
@@ -189,6 +191,30 @@ uv run --directory recipe-mcp recipe-mcp-cli plan_edit '{"name":"methanol-10ps",
 uv run --directory recipe-mcp recipe-mcp-cli plan_delete '{"name":"methanol-10ps","confirm":"methanol-10ps"}'
 ```
 
+### Helmod exchange
+
+`helmod_import` reads the string from Helmod's *Upload Production line* dialog (Helmod 2.x: `helpers.encode_string(serpent.dump(model))`) and saves it as a plan; `helmod_export` writes a plan as a string for the *Download Production line* dialog, which adds it as a new Helmod model. The string is parsed as Lua table literals plus serpent's shared-reference fixups; nothing is executed.
+
+Both take a file instead of the string: `helmod_import` reads `path`, and `helmod_export` with `path` writes the string there and leaves `text` empty (an existing file needs `overwrite=true`). Relative paths are under `data/helmod/`, since the server's working directory depends on the MCP client.
+
+Import:
+
+- Each Helmod block with recipes becomes a plan block whose lines keep Helmod's machine, modules, beacons (`combo` → `count`, `per_factory` → `per_machine`), fuel and neighbour bonus, with `auto_discover=false`. `resource` recipes become `mining:<resource>`; `energy` recipes become `generate:`, `solar:`, `heat:` or `wind:` lines in `energy_mode="balance"`. Helmod's base time of 1, 60 or 3600 s sets the plan's `per`.
+- Block inputs become `targets` (`consume` for input mode, `by_product=false`); `by_factory` blocks keep `factory.input` as `fixed_machines`. A block without an input uses the outputs Helmod computed for its recipes' pivots.
+- Plans are flat, so nested blocks are linked: a linked child block targets what its parent and earlier siblings import (`{"from": [...]}`), or in input mode consumes their surplus. Inputs set on a block without recipes go to the first linked descendant that makes the item.
+- Helmod's algebra solver balances one pivot per recipe and turns other shortfalls and excess into block inputs and products. Those blocks import with `solver="matrix"`, the pivots balanced and Helmod's inputs and products as `imports` and `surplus_items`. Simplex blocks, and blocks where the matrix is underdetermined or negative, use the LP over the same lines (with a warning).
+- `mining_productivity` is read from the effects Helmod stored on its mining lines unless given.
+- `helmod_machines` returns Helmod's own machine counts for comparison with `plan_solve`. Quality, product constraints, production shares, display limits, assembler limitation, global effects and spoilage are not imported and are listed in `warnings`.
+
+Export solves the plan first. Each block becomes an unlinked Helmod block whose inputs are the resolved targets (links frozen at their current amounts), or its consume amounts in input mode, or its `fixed_machines` as `by_factory`. Auto-discovered blocks export the lines the solve chose. `lp` maps to Helmod's simplex solver and `matrix` to its algebra solver. Limits, objectives, import rules and other LP-only settings are listed in `warnings`. Helmod recomputes with the force's current research, mining productivity included.
+
+```powershell
+uv run --directory recipe-mcp recipe-mcp-cli helmod_import '{"text":"eNrt...","name":"from-helmod","force":"faction-a632079"}'
+uv run --directory recipe-mcp recipe-mcp-cli helmod_export '{"name":"methanol-10ps"}'
+uv run --directory recipe-mcp recipe-mcp-cli helmod_export '{"name":"methanol-10ps","path":"methanol-10ps.txt"}'
+uv run --directory recipe-mcp recipe-mcp-cli helmod_import '{"name":"from-file","path":"methanol-10ps.txt"}'
+```
+
 ## Data export
 
 Export the final recipe, machine and technology prototypes of the active mod set. This runs `factorio --dump-data` against your mods directory and does not touch a running game:
@@ -268,6 +294,7 @@ recipe-mcp/
 │   │   ├── store.py             PlanStore: names, validation, atomic writes, revisions, fingerprints, trash
 │   │   ├── ops.py               plan_edit operations and pin
 │   │   └── factory.py           plan_solve and plan_compare: dependency order, linked targets, factory ledger
+│   ├── helmod/                  Helmod exchange: codec.py (export strings, serpent reader), convert.py (import/export)
 │   └── export/                  prototypes.py (recipe-mcp-export), save.py (recipe-mcp-export-save)
 ├── scripts/                     one-off analyses, not part of the package; they import recipe_mcp
 │   ├── analysis/                methanol.py, science_fluids.py, pressure_transition.py
@@ -385,3 +412,11 @@ uv run python scripts/validation/locale_reference.py
 ```
 
 This checks every exported recipe, item, fluid, entity and technology name in English and Simplified Chinese and writes `data/reports/helmod-gaps/locale-parity.json`.
+
+Check the Helmod exchange against the Helmod models in your newest save (two one-tick benchmarks of a save copy):
+
+```powershell
+uv run python scripts/validation/helmod_exchange.py
+```
+
+It imports every model, compares `plan_solve` with Helmod's machine counts, exports each plan and has a copy of Helmod (with one added test interface that runs its Download dialog's import code) recompute it. It exits non-zero on any mismatch.

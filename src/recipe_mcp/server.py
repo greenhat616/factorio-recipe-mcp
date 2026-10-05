@@ -7,6 +7,7 @@ import click
 from mcp.server.fastmcp import FastMCP
 
 from .database import Database
+from .helmod.convert import HelmodExport, HelmodImport, export_helmod, import_helmod
 from .models import (
     MachineInfo,
     PlanValidation,
@@ -465,6 +466,42 @@ def create_server(db: Database, plans_dir: Path = PLANS_DIR) -> FastMCP:
     def plan_delete(name: str, confirm: str) -> PlanDeleted:
         """Move a plan to the trash folder (data/plans/.trash); confirm must equal the plan name."""
         return PlanDeleted(name=name, trash_path=store.delete(name, confirm))
+
+    @mcp.tool()
+    def helmod_import(
+        name: str,
+        text: str = '',
+        path: str = '',
+        description: str = '',
+        force: str = '',
+        overwrite: bool = False,
+        dry_run: bool = False,
+        validate_stage: bool = True,
+        mining_productivity: float | None = None,
+    ) -> HelmodImport:
+        """Save a Helmod 2.x model string (Helmod's "Upload Production line" dialog) as plan `name`.
+        Each Helmod block with recipes becomes a plan block with fixed lines (machine, modules, beacons, fuel);
+        nested linked blocks get targets/consume that refer to their parent's and earlier siblings' imports/surplus.
+        Helmod's algebra blocks use the matrix solver balancing each recipe's pivot (LP when that fails), simplex
+        blocks use the LP. Base time 1/60/3600 s sets per. mining_productivity defaults to what the export's mining
+        lines carry. helmod_machines gives Helmod's own machine counts to compare with plan_solve. Unsupported
+        features (quality, constraints, production share, spoilage...) are listed in warnings. dry_run checks only.
+        Give the string as text, or a file as path (relative paths are under data/helmod/)."""
+        return import_helmod(
+            store, text, name, description, force, overwrite, dry_run, validate_stage, mining_productivity, path
+        )
+
+    @mcp.tool()
+    def helmod_export(name: str, blocks: list[str] = [], path: str = '', overwrite: bool = False) -> HelmodExport:
+        """A saved plan (enabled blocks, or the listed ones) as a Helmod 2.x model string for Helmod's
+        "Download Production line" dialog, which adds it as a new model.
+        The plan is solved first: auto-discovered blocks export the lines the solve picked, links to other blocks
+        export as their current amounts, each block becomes an unlinked Helmod block with its targets (or consume
+        amounts) as inputs, and lp/matrix map to Helmod's simplex/algebra solver. Base time = the plan's per.
+        Limits, objectives, import rules and other LP-only settings are listed in warnings.
+        With path the string is written to that file instead of returned (relative paths are under data/helmod/;
+        an existing file needs overwrite=true)."""
+        return export_helmod(store, name, blocks, path, overwrite)
 
     return mcp
 

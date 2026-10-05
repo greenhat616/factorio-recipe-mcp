@@ -335,3 +335,30 @@ proportional allocation edges as an explicit mixing assumption. Graphs use
 achieved flows, including relaxed infeasible results. Fluid temperatures retain
 separate keys and zero-cost matching edges; internal Nullius turbine energy
 channels are isolated by turbine type and tier.
+
+
+### Offline planning viewer
+
+Export any `solve_production` result with `graph="bipartite"`, or a
+`plan_solve` result with `detail="full", graph="full"`, as JSON, then run:
+
+```powershell
+uv run python -m recipe_mcp.viewer result.json report.html
+```
+
+MCP CLI response envelopes are also accepted. Open the resulting HTML directly:
+no server, CDN or additional project dependency is required. It shows factory and
+block flow graphs, searchable line/material tables, reference values, node details,
+power/heat summaries, snapshot provenance and assumptions. You can load another
+JSON result, download the embedded data, and zoom the diagram.
+
+Generate the real Nullius examples and performance measurements:
+
+```powershell
+uv run python scripts/validation/planning_examples.py
+```
+
+Outputs are local under `data/reports/helmod-gaps/`: `factory.html` for a linked
+methanol/utility factory, `power.html` for 10 MW generation, their JSON files, and
+`metrics.json`. See [implementation evidence](docs/spec/2026-10-04-helmod-gaps/implementation-results.md)
+for test coverage, Helmod reference provenance and model boundaries.

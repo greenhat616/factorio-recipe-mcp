@@ -14,7 +14,7 @@
   uv run --directory recipe-mcp ruff check
   ```
 - "文件"列中的源码路径相对 `src/recipe_mcp/`；测试位于 `tests/`。
-- 每个阶段一个 commit（提交信息遵循 `AGENTS.md`），文件保持 LF 换行。
+- 按阶段实施和验证；最终将核心能力及其跨阶段验收整理为完整提交，再单独提交离线可视化。提交遵循 `AGENTS.md`，文件保持 LF 换行。
 - "完成标准"中的数值断言都写进测试。
 
 ## 阶段 1：引用来源、系数与消耗引用（US-A1、A2）
@@ -139,3 +139,9 @@ graph LR
 | NFR-3 | 4.3, 5.6 |
 | NFR-4 | 4.5, 5.3 |
 | NFR-6 | 7.4, 7.6 |
+
+
+## 2026-10-05 验收状态
+
+阶段 1–7 已实施并通过验证（含 P2 温度）；HTML 可视化追加交付。
+逐项证据、Helmod 对照范围、性能及模型边界见 [implementation-results.md](implementation-results.md)。

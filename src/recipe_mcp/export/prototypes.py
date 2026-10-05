@@ -10,7 +10,9 @@ from pathlib import Path
 import click
 
 from ..database import JSON, Database
+from ..names import Names
 from ..paths import DATA_DIR, FACTORIO_EXE, FACTORIO_MODS
+from .locales import snapshot
 
 
 @click.command(help=__doc__)
@@ -57,7 +59,10 @@ def main(exe: Path, mods: Path) -> None:
     manifest.update(recipe_count=len(raw['recipe']), raw_sha256=hashlib.sha256(raw_path.read_bytes()).hexdigest())
     log_text = (work / 'export-console.log').read_text(encoding='utf-8', errors='replace')
     manifest['loaded_mod_versions'] = dict(re.findall(r'Loading mod ([^ ]+) ([^ ]+) \(data\.lua\)', log_text))
+    locales = snapshot(manifest, exe.parents[2] / 'data', mods, log_text)
+    (work / 'locales.json').write_text(json.dumps(locales, ensure_ascii=False), encoding='utf-8')
     db = Database(raw=raw)
+    db.names = Names(raw, locales['catalogs'], locales['warnings'])
     (work / 'recipes.json').write_text(
         json.dumps([db.recipe(n).model_dump(mode='json') for n in sorted(db.recipes)], ensure_ascii=False, indent=2),
         encoding='utf-8',

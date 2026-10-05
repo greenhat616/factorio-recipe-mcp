@@ -8,6 +8,8 @@ from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, BeforeValidator, ConfigDict
 
+from .names import DisplayName
+
 JSON = dict[str, Any]
 
 
@@ -41,7 +43,7 @@ class Availability(BaseModel):
     scope: str = RESEARCH_GATE
 
 
-class RecipeInfo(BaseModel):
+class RecipeInfo(DisplayName):
     name: str
     category: str
     energy_required: float
@@ -71,7 +73,7 @@ class Construction(BaseModel):
     scope: str = 'manufacturing research gate only; existing inventory not inspected'
 
 
-class MachineInfo(BaseModel):
+class MachineInfo(DisplayName):
     name: str
     type: str
     crafting_speed: float | None = None
@@ -88,7 +90,7 @@ class MachineInfo(BaseModel):
 TechnologyState = Literal['researched', 'researching', 'available_to_research', 'locked', 'disabled', 'unknown']
 
 
-class TechnologyInfo(BaseModel):
+class TechnologyInfo(DisplayName):
     name: str
     localised_name: Any = None
     unit: JSON | None = None

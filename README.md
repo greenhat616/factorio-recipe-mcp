@@ -4,7 +4,7 @@ Factorio recipe, technology and save-progress queries plus Helmod / Factory Plan
 
 ## Entry points
 
-The same 21 tools are reachable two ways:
+The same 22 tools are reachable two ways:
 
 | Entry | Command | Use |
 |---|---|---|
@@ -63,6 +63,7 @@ uv run --directory recipe-mcp recipe-mcp-cli validate_plan '{"recipe_rates":{"nu
 | `get_technology` | Effects, direct prerequisites, cost or trigger, saved level and progress |
 | `technology_requirements` | Recursive prerequisites, science packs, Nullius checkpoint tokens, target state |
 | `search_recipes` | Recipe search; `available_only` keeps recipes usable by the force |
+| `get_object_names` | Batch object names in a chosen language, with stable IDs and explicit fallback status |
 | `get_recipe` | Amounts, time, productivity permission, unlocking technologies, availability |
 | `related_recipes` | Producers and/or consumers of an item or fluid |
 | `production_chain` | Upstream expansion, by default only through enabled recipes, with depth/count limits and cycle protection |
@@ -80,7 +81,21 @@ uv run --directory recipe-mcp recipe-mcp-cli validate_plan '{"recipe_rates":{"nu
 | `plan_compare` | Saved results of two plans or blocks side by side: totals, imports, surplus |
 | `plan_delete` | Move a plan to the trash folder |
 
-Every result is a pydantic model, so each tool publishes an output schema and returns `structuredContent` alongside the JSON text. Names are internal prototype IDs; localized names come back as raw locale keys. `net_balance` ignores modules and force productivity bonuses and does not treat fluids at different temperatures as interchangeable.
+Every result is a pydantic model, so each tool publishes an output schema and returns `structuredContent` alongside the JSON text. Object IDs stay in `name`; recipe, technology and machine queries also return `display_name`, `language`, `resolved_language` and `name_status`. The original `localised_name` expression remains available. `net_balance` ignores modules and force productivity bonuses and does not treat fluids at different temperatures as interchangeable.
+
+## Object names and languages
+
+Queries and searches accept `language="en"` (default), `"zh-CN"`, `"de"`, or another Factorio language code. Searches match both IDs and translated names. `get_object_names` takes e.g. `{"objects":[{"kind":"fluid","name":"nullius-methanol"}],"language":"zh-CN"}` and returns a typed name catalog. Kinds include `recipe`, `item` (including modules), `fluid`, `entity`, `technology`, and exact prototype types.
+
+`solve_production` and `plan_solve` accept `language` and include a `names` catalog keyed by typed IDs. Locale selection never changes recipe choices, flow keys or solver arithmetic. Requested-language keys fall back to English, then the raw ID; `name_status` is `translated`, `fallback` or `raw`. Unsupported player controls/plural expressions remain visibly unresolved.
+
+Prototype export also saves `data/locales.json`, tied to the prototype SHA-256, using the exported mod versions and loading order. To add locales to an existing export without launching the game:
+
+```powershell
+uv run python -m recipe_mcp.export.locales
+```
+
+Missing source versions are reported in catalog warnings; an unavailable recorded version is an error. Static locale resolution covers prototype names, not runtime script/player text. A missing or stale locale snapshot leaves IDs readable. The current snapshot contains 55 languages, though individual mods may only translate a subset.
 
 ## Research gating
 
@@ -343,14 +358,14 @@ Export any `solve_production` result with `graph="bipartite"`, or a
 `plan_solve` result with `detail="full", graph="full"`, as JSON, then run:
 
 ```powershell
-uv run python -m recipe_mcp.viewer result.json report.html
+uv run python -m recipe_mcp.viewer result.json report.html --language en --language zh-CN
 ```
 
 MCP CLI response envelopes are also accepted. Open the resulting HTML directly:
 no server, CDN or additional project dependency is required. It shows factory and
 block flow graphs, searchable line/material tables, reference values, node details,
 power/heat summaries, snapshot provenance and assumptions. You can load another
-JSON result, download the embedded data, and zoom the diagram.
+JSON result, download the embedded data, and zoom the diagram. The object-name selector switches between embedded languages and prototype IDs; tables retain IDs below translated names. Name and ID searches both work. Repeat `--language` to embed more languages; the first is selected initially. Omit the options to retain the result’s embedded catalog without opening the prototype database.
 
 Generate the real Nullius examples and performance measurements:
 
@@ -362,3 +377,11 @@ Outputs are local under `data/reports/helmod-gaps/`: `factory.html` for a linked
 methanol/utility factory, `power.html` for 10 MW generation, their JSON files, and
 `metrics.json`. See [implementation evidence](docs/spec/2026-10-04-helmod-gaps/implementation-results.md)
 for test coverage, Helmod reference provenance and model boundaries.
+
+Compare the resolver against Factorio's own name export (uses isolated write directories, checks mod/settings hashes and data-stage checksums):
+
+```powershell
+uv run python scripts/validation/locale_reference.py
+```
+
+This checks every exported recipe, item, fluid, entity and technology name in English and Simplified Chinese and writes `data/reports/helmod-gaps/locale-parity.json`.

@@ -5,6 +5,7 @@ import json
 import math
 from collections import defaultdict
 from collections.abc import Iterable, Mapping
+from functools import cached_property
 from pathlib import Path
 
 from .models import (
@@ -22,6 +23,7 @@ from .models import (
     TechnologyState,
     entries,
 )
+from .names import Names
 from .paths import PROGRESS, RAW_DUMP
 
 
@@ -45,6 +47,7 @@ class Database:
             self.raw_sha256: str | None = hashlib.sha256(blob).hexdigest()
         else:
             self.raw, self.raw_sha256 = raw, None
+        self.locale_path = Path(path or RAW_DUMP).parent.parent / 'locales.json'
         self.default_force = default_force
         if progress is None:
             progress = json.loads(PROGRESS.read_text(encoding='utf-8')) if PROGRESS.exists() else {}
@@ -69,6 +72,10 @@ class Database:
                 if effect['type'] == 'unlock-recipe':
                     self.unlocks[effect['recipe']].append(name)
 
+    @cached_property
+    def names(self) -> Names:
+        return Names.from_snapshot(self.raw, self.locale_path, self.raw_sha256)
+
     def _recipe(self, name: str) -> JSON:
         if name not in self.recipes:
             raise ValueError(f'Unknown recipe: {name}')
@@ -80,15 +87,22 @@ class Database:
             raise ValueError(f'Unknown technology: {name}')
         return technologies[name]
 
-    def recipe(self, name: str, force: str | None = None) -> RecipeInfo:
+    def recipe(self, name: str, force: str | None = None, language: str = 'en') -> RecipeInfo:
         r = self._recipe(name)
         keys = ['allow_productivity', 'maximum_productivity', 'allow_quality', 'hidden', 'localised_name']
         return RecipeInfo(
+            **self.names.fields('recipe', name, language),
             name=name,
             category=r.get('category', 'crafting'),
             energy_required=r.get('energy_required', 0.5),
-            ingredients=r.get('ingredients', []),
-            results=r.get('results', []),
+            ingredients=[
+                {**e, **self.names.fields(e.get('type', 'item'), e['name'], language)}
+                for e in entries(r.get('ingredients', []))
+            ],
+            results=[
+                {**e, **self.names.fields(e.get('type', 'item'), e['name'], language)}
+                for e in entries(r.get('results', []))
+            ],
             surface_conditions=r.get('surface_conditions'),
             enabled_at_start=r.get('enabled', True),
             unlock_technologies=self.unlocks[name],
@@ -166,7 +180,7 @@ class Database:
             productivity_bonus=runtime.get('productivity_bonus', 0),
         )
 
-    def technology(self, name: str, force: str | None = None) -> TechnologyInfo:
+    def technology(self, name: str, force: str | None = None, language: str = 'en') -> TechnologyInfo:
         t = self._technology(name)
         selected = self.force_name(force) if self.progress_compatible else None
         f = self.progress['forces'][selected] if selected else {}
@@ -190,6 +204,7 @@ class Database:
             progress = runtime.get('saved_progress', 0) if runtime else None
         keys = ['localised_name', 'unit', 'research_trigger', 'effects', 'hidden', 'max_level', 'upgrade']
         return TechnologyInfo(
+            **self.names.fields('technology', name, language),
             name=name,
             prerequisites=prerequisites,
             unlocks_recipes=[e['recipe'] for e in entries(t.get('effects')) if e['type'] == 'unlock-recipe'],
@@ -291,7 +306,7 @@ class Database:
             ('transport-drone-', 'transport-fluid-', 'transport-item-')
         ) or name.startswith(('creative-mod', 'nullius-creative', 'request-'))
 
-    def machines(self, recipe: str, force: str | None = None) -> list[MachineInfo]:
+    def machines(self, recipe: str, force: str | None = None, language: str = 'en') -> list[MachineInfo]:
         category = self._recipe(recipe).get('category', 'crafting')
         keys = [
             'crafting_speed',
@@ -305,14 +320,18 @@ class Database:
         ]
         return [
             MachineInfo(
-                name=name, type=kind, construction=self.machine_stage(name, force), **{k: m[k] for k in keys if k in m}
+                **self.names.fields('entity', name, language),
+                name=name,
+                type=kind,
+                construction=self.machine_stage(name, force),
+                **{k: m[k] for k in keys if k in m},
             )
             for kind in ['assembling-machine', 'furnace', 'rocket-silo', 'character']
             for name, m in self.raw.get(kind, {}).items()
             if category in m.get('crafting_categories', [])
         ]
 
-    def science(self, technology: str, force: str | None = None) -> ScienceRequirements:
+    def science(self, technology: str, force: str | None = None, language: str = 'en') -> ScienceRequirements:
         seen: set[str] = set()
         packs: set[str] = set()
 
@@ -332,7 +351,7 @@ class Database:
             science_packs=sorted(p for p in packs if p.endswith('-pack')),
             requirement_tokens=sorted(p for p in packs if not p.endswith('-pack')),
             prerequisites_transitive=sorted(seen - {technology}),
-            technology_state=self.technology(technology, force),
+            technology_state=self.technology(technology, force, language),
         )
 
     def balance(self, rates: Mapping[str, float]) -> dict[str, float]:

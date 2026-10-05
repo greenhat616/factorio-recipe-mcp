@@ -51,6 +51,7 @@ def main() -> None:
         seconds = perf_counter() - started
         assert factory.factory.complete and factory.graph
         result = factory.model_dump(mode='json')
+        result['names'] = db.names.catalog(result, ['en', 'zh-CN', 'de']).model_dump(mode='json')
         (output / 'factory.json').write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding='utf-8')
         (output / 'factory.html').write_text(render(result, '甲醇工厂 · 规划观察器'), encoding='utf-8')
         ten = [
@@ -66,6 +67,7 @@ def main() -> None:
         assert ten_result.factory.complete
     single = plan(db, {'energy:electric': 10}, energy_mode='balance', graph='bipartite', force=force)
     payload = single.model_dump(mode='json')
+    payload['names'] = db.names.catalog(payload, ['en', 'zh-CN', 'de']).model_dump(mode='json')
     (output / 'power.json').write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding='utf-8')
     (output / 'power.html').write_text(render(payload, '10 MW 发电站 · 规划观察器'), encoding='utf-8')
     tiny = Database(raw={'solar-panel': {'panel': {'production': '1MW'}}, 'recipe': {}, 'technology': {}})

@@ -7,6 +7,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
+from ..names import NameCatalog
 from ..planner import plan as solve_block
 from ..planner.disposal import disposal_defaults, dispose
 from ..planner.energy import rate_factor
@@ -56,6 +57,7 @@ class FactoryLedger(BaseModel):
 
 
 class FactoryResult(BaseModel):
+    names: NameCatalog | None = None
     graph: ProductionGraph | None = Field(None, exclude_if=lambda v: v is None)
     plan: str
     revision: int
@@ -161,6 +163,7 @@ def solve_plan(
     save_results: bool = True,
     graph: Literal['none', 'blocks', 'full'] = 'none',
     graph_options: GraphOptions | None = None,
+    language: str = 'en',
 ) -> FactoryResult:
     opts = options(graph_options)
     if graph not in ('none', 'blocks', 'full'):
@@ -188,7 +191,9 @@ def solve_plan(
                 f: getattr(block.request, f) for f in block.request.model_fields_set if f not in ('targets', 'consume')
             }
             supply = resolve_amounts(plan, block, results, key, warnings, consume=True)
-            r = solve_block(store.db, resolved, force=plan.force, per=plan.per, consume=supply, **args)
+            r = solve_block(
+                store.db, resolved, force=plan.force, per=plan.per, consume=supply, language=language, **args
+            )
         except ValueError as e:
             outcomes.append(BlockOutcome(id=bid, status='error', error=str(e)))
             continue
@@ -281,7 +286,7 @@ def solve_plan(
                                 },
                             )
                         )
-    return FactoryResult(
+    result = FactoryResult(
         graph=factory_graph(plan.per, outcomes, results, factory, links, graph == 'full', opts)
         if graph != 'none'
         else None,
@@ -293,6 +298,8 @@ def solve_plan(
         factory=factory,
         warnings=warnings,
     )
+    result.names = store.db.names.catalog(result.model_dump(mode='json'), [language])
+    return result
 
 
 def ledger(store: PlanStore, plan: PlanFile, results: Sequence[PlanResult], complete: bool) -> FactoryLedger:

@@ -18,6 +18,7 @@ from .models import (
     TechnologyInfo,
     TechnologyPage,
 )
+from .names import NameCatalog, ObjectRef
 from .paths import PLANS_DIR
 from .planner import machine_stats as planner_machine_stats
 from .planner import plan
@@ -53,23 +54,45 @@ def create_server(db: Database, plans_dir: Path = PLANS_DIR) -> FastMCP:
     store = PlanStore(plans_dir, db)
 
     @mcp.tool()
+    def get_object_names(objects: list[ObjectRef], language: str = 'en') -> NameCatalog:
+        """Resolve up to 200 object names. kind: recipe/item/fluid/entity/technology or an exact prototype type.
+        IDs stay unchanged; name_status and resolved_language expose English/ID fallbacks."""
+        if len(objects) > 200:
+            raise ValueError('At most 200 objects per request')
+        return NameCatalog(
+            raw_sha256=db.raw_sha256,
+            language=language,
+            available_languages=sorted(db.names.catalogs),
+            translations={language: {f'{o.kind}:{o.name}': db.names.get(o.kind, o.name, language) for o in objects}},
+            warnings=db.names.warnings,
+        )
+
+    @mcp.tool()
     def search_recipes(
-        query: str, limit: int = 30, include_virtual: bool = False, available_only: bool = False, force: str = ''
+        query: str,
+        limit: int = 30,
+        include_virtual: bool = False,
+        available_only: bool = False,
+        force: str = '',
+        language: str = 'en',
     ) -> list[RecipeInfo]:
-        """Search prototype IDs or localized-name keys. Virtual logistics recipes excluded by default."""
+        """Search prototype IDs or translated display names (English by default). Virtual logistics recipes excluded by default."""
         selected = db.require_force(force) if available_only else force
         return [
-            db.recipe(n, selected)
+            db.recipe(n, selected, language)
             for n in db.recipes
-            if query.lower() in n.lower()
+            if (
+                query.casefold() in n.casefold()
+                or query.casefold() in db.names.get('recipe', n, language).display_name.casefold()
+            )
             and (include_virtual or not db.virtual(n))
             and (not available_only or db.availability(n, selected).usable_at_stage is True)
         ][: max(1, min(limit, 200))]
 
     @mcp.tool()
-    def get_recipe(name: str, force: str = '') -> RecipeInfo:
+    def get_recipe(name: str, force: str = '', language: str = 'en') -> RecipeInfo:
         """Recipe plus save-snapshot research gate. Unknown means no compatible snapshot or no force selected."""
-        return db.recipe(name, force)
+        return db.recipe(name, force, language)
 
     @mcp.tool()
     def related_recipes(
@@ -78,13 +101,14 @@ def create_server(db: Database, plans_dir: Path = PLANS_DIR) -> FastMCP:
         include_virtual: bool = False,
         available_only: bool = False,
         force: str = '',
+        language: str = 'en',
     ) -> RelatedRecipes:
         """All recipes producing/consuming an item or fluid ID; retains byproducts and packaging."""
         selected = db.require_force(force) if available_only else force
 
         def recipes(index: dict[str, list[str]]) -> list[RecipeInfo]:
             return [
-                db.recipe(n, selected)
+                db.recipe(n, selected, language)
                 for n in index.get(material, [])
                 if (include_virtual or not db.virtual(n))
                 and (not available_only or db.availability(n, selected).usable_at_stage is True)
@@ -97,7 +121,12 @@ def create_server(db: Database, plans_dir: Path = PLANS_DIR) -> FastMCP:
 
     @mcp.tool()
     def production_chain(
-        material: str, depth: int = 2, max_recipes: int = 80, available_only: bool = True, force: str = ''
+        material: str,
+        depth: int = 2,
+        max_recipes: int = 80,
+        available_only: bool = True,
+        force: str = '',
+        language: str = 'en',
     ) -> ProductionChain:
         """Bounded upstream alternatives, cycle-safe. This is a graph, not an optimized production plan."""
         selected = db.require_force(force) if available_only else force
@@ -117,7 +146,7 @@ def create_server(db: Database, plans_dir: Path = PLANS_DIR) -> FastMCP:
                     if len(recipes) >= max(1, min(max_recipes, 300)):
                         truncated = True
                         continue
-                    recipes[n] = db.recipe(n, selected)
+                    recipes[n] = db.recipe(n, selected, language)
                     next_layer.update(e['name'] for e in recipes[n].ingredients)
             frontier = next_layer
         return ProductionChain(
@@ -125,17 +154,21 @@ def create_server(db: Database, plans_dir: Path = PLANS_DIR) -> FastMCP:
         )
 
     @mcp.tool()
-    def compatible_machines(recipe: str, force: str = '', buildable_only: bool = False) -> list[MachineInfo]:
+    def compatible_machines(
+        recipe: str, force: str = '', buildable_only: bool = False, language: str = 'en'
+    ) -> list[MachineInfo]:
         """Category-compatible prototypes with speed, power, modules and fluid boxes; check fluid constraints."""
         selected = db.require_force(force) if buildable_only else force
         return [
-            m for m in db.machines(recipe, selected) if not buildable_only or m.construction.buildable_at_stage is True
+            m
+            for m in db.machines(recipe, selected, language)
+            if not buildable_only or m.construction.buildable_at_stage is True
         ]
 
     @mcp.tool()
-    def technology_requirements(technology: str, force: str = '') -> ScienceRequirements:
+    def technology_requirements(technology: str, force: str = '', language: str = 'en') -> ScienceRequirements:
         """Science/trigger requirements, prerequisite tree, and selected force's actual technology state."""
-        return db.science(technology, force)
+        return db.science(technology, force, language)
 
     @mcp.tool()
     def get_progress_context() -> ProgressContext:
@@ -150,13 +183,18 @@ def create_server(db: Database, plans_dir: Path = PLANS_DIR) -> FastMCP:
         include_hidden: bool = False,
         offset: int = 0,
         limit: int = 50,
+        language: str = 'en',
     ) -> TechnologyPage:
         """Paginated technologies, optionally filtered by name and research state."""
         selected = db.require_force(force) if state not in ('all', 'unknown') else force
         rows = [
-            db.technology(n, selected)
+            db.technology(n, selected, language)
             for n, t in sorted(db.raw.get('technology', {}).items())
-            if query.lower() in n.lower() and (include_hidden or not t.get('hidden', False))
+            if (
+                query.casefold() in n.casefold()
+                or query.casefold() in db.names.get('technology', n, language).display_name.casefold()
+            )
+            and (include_hidden or not t.get('hidden', False))
         ]
         if state != 'all':
             rows = [r for r in rows if r.state == state]
@@ -164,9 +202,9 @@ def create_server(db: Database, plans_dir: Path = PLANS_DIR) -> FastMCP:
         return TechnologyPage(total=len(rows), offset=offset, limit=limit, technologies=rows[offset : offset + limit])
 
     @mcp.tool()
-    def get_technology(name: str, force: str = '') -> TechnologyInfo:
+    def get_technology(name: str, force: str = '', language: str = 'en') -> TechnologyInfo:
         """Technology unlock effects, prerequisites, cost/trigger, saved level/progress, and research gate."""
-        return db.technology(name, force)
+        return db.technology(name, force, language)
 
     @mcp.tool()
     def validate_plan(
@@ -221,6 +259,7 @@ def create_server(db: Database, plans_dir: Path = PLANS_DIR) -> FastMCP:
         energy_mode: EnergyMode = 'report',
         solar_factor: float = 0.7,
         wind_factor: float | None = None,
+        language: str = 'en',
     ) -> PlanResult:
         """Helmod/Factory Planner style rate calculator: machine counts, modules/beacons, power, imports, byproducts.
 
@@ -296,6 +335,7 @@ def create_server(db: Database, plans_dir: Path = PLANS_DIR) -> FastMCP:
             energy_mode=energy_mode,
             solar_factor=solar_factor,
             wind_factor=wind_factor,
+            language=language,
         )
 
     @mcp.tool()
@@ -407,12 +447,13 @@ def create_server(db: Database, plans_dir: Path = PLANS_DIR) -> FastMCP:
         save_results: bool = True,
         graph: Literal['none', 'blocks', 'full'] = 'none',
         graph_options: GraphOptions | None = None,
+        language: str = 'en',
     ) -> FactoryResult:
         """Solve enabled blocks (or the listed ones plus the blocks they link to) in dependency order and sum them:
         net_inputs / net_outputs / internal_transfers per item on a shared-bus assumption, totals, beacons, modules,
         and disposal for surplus no other block takes. A failing block is reported and the rest still solve.
         detail="full" adds each block's full solve_production result. save_results writes the summaries back."""
-        return solve_plan(store, name, blocks, detail, save_results, graph, graph_options)
+        return solve_plan(store, name, blocks, detail, save_results, graph, graph_options, language)
 
     @mcp.tool()
     def plan_compare(a: str, b: str) -> Comparison:

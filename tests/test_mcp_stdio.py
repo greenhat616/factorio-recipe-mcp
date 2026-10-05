@@ -20,7 +20,7 @@ async def run(db: Database, force: str, plan_name: str) -> None:
         async with ClientSession(read, write) as session:
             await session.initialize()
             listing = await session.list_tools()
-            assert len(listing.tools) == 21
+            assert len(listing.tools) == 22
 
             async def call(name: str, args: JSON, error: bool = False) -> Any:
                 result = await session.call_tool(name, args)
@@ -31,6 +31,19 @@ async def run(db: Database, force: str, plan_name: str) -> None:
             assert context['compatible']
             recipe = (await call('get_recipe', {'name': 'nullius-pressure-methanol', 'force': force}))[0]
             assert recipe['availability']['usable_at_stage'] is True
+            if db.names.catalogs:
+                assert recipe['display_name'] == 'Methanol (pressurized)'
+                translated = (await call('get_recipe', {'name': 'nullius-pressure-methanol', 'language': 'zh-CN'}))[0]
+                assert translated['name'] == recipe['name'] and '甲醇' in translated['display_name']
+                search = await call('search_recipes', {'query': 'pressurized', 'limit': 200})
+                assert any(r['name'] == 'nullius-pressure-methanol' for r in search)
+                lookup = (
+                    await call(
+                        'get_object_names',
+                        {'objects': [{'kind': 'fluid', 'name': 'nullius-methanol'}], 'language': 'zh-CN'},
+                    )
+                )[0]
+                assert lookup['translations']['zh-CN']['fluid:nullius-methanol']['display_name'] == '甲醇'
             unknown = (await call('get_recipe', {'name': 'nullius-methanol'}))[0]
             assert unknown['availability']['state'] == 'unknown'  # multiplayer requires a force
             related = (
@@ -92,6 +105,8 @@ async def run(db: Database, force: str, plan_name: str) -> None:
                 )
             )[0]
             assert lp['graph']['schema_version'] == 1
+            assert lp['names']['language'] == 'en'
+            assert 'fluid:nullius-methanol' in lp['names']['translations']['en']
             energy = (
                 await call(
                     'solve_production',

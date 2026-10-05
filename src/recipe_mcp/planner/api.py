@@ -87,6 +87,7 @@ def plan(
     energy_mode: EnergyMode = 'report',
     solar_factor: float = 0.7,
     wind_factor: float | None = None,
+    language: str = 'en',
 ) -> PlanResult:
     opts = options(graph_options)
     if graph not in ('none', 'bipartite'):
@@ -313,6 +314,7 @@ def plan(
         result.module_inventory = inventory
     if graph == 'bipartite':
         result.graph = build_line_graph(result, opts)
+    result.names = db.names.catalog(result.model_dump(mode='json'), [language])
     return result
 
 

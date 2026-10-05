@@ -5,6 +5,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field
 
 from ..models import JSON, Spec
+from ..names import NameCatalog
 
 # Either an explicit list (repeats allowed) or {module: count}.
 ModuleSpec = list[str] | dict[str, int]
@@ -446,6 +447,7 @@ class ProductionGraph(BaseModel):
 
 
 class PlanResult(Report):
+    names: NameCatalog | None = None
     graph: ProductionGraph | None = Field(None, exclude_if=lambda v: v is None)
     energy_mode: EnergyMode = 'report'
     energy_factors: dict[str, float | None] = {}

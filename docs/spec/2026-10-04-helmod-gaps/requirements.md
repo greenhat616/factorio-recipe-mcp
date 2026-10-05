@@ -1,5 +1,6 @@
 # 需求：补齐相对 Helmod 的规划缺口
 
+- 实施补充：[implementation.md](implementation.md)（2026-10-05，含温度、对照验收及 HTML 可视化）
 - 日期：2026-10-04
 - 基线：commit `b654adf`（计算模式、插件 / 信标、方案管理、整数模式、方案对比均已完成，见 [../2026-10-04-planner-modes-and-plans/](../2026-10-04-planner-modes-and-plans/requirements.md)）
 - 相关文档：[design.md](design.md)、[tasks.md](tasks.md)

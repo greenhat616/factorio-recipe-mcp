@@ -1,5 +1,6 @@
 # 任务拆分与实施计划
 
+- 实施补充：[implementation.md](implementation.md)（2026-10-05，含温度、对照验收及 HTML 可视化）
 - 日期：2026-10-04
 - 对应：[requirements.md](requirements.md)、[design.md](design.md)
 - 基线：commit `b654adf`
